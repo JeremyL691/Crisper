@@ -95,11 +95,18 @@ struct AdvancedVirtualDisplaysTab: View {
     @State private var customWidth: String = String(VirtualDisplayService.shared.smartConfig.width)
     @State private var customHeight: String = String(VirtualDisplayService.shared.smartConfig.height)
 
-    static let sizes: [(label: String, width: Int, height: Int, defaultHiDPI: Bool)] = [
-        ("1600×1000 HiDPI (3200×2000)", 3200, 2000, true),
-        ("1920×1080", 1920, 1080, false),
-        ("2560×1440", 2560, 1440, false),
-        ("3840×2160", 3840, 2160, false)
+    struct ResolutionPreset {
+        let label: String
+        let width: Int
+        let height: Int
+        let defaultHiDPI: Bool
+    }
+
+    static let sizes: [ResolutionPreset] = [
+        ResolutionPreset(label: "1600×1000 HiDPI (3200×2000)", width: 3200, height: 2000, defaultHiDPI: true),
+        ResolutionPreset(label: "1920×1080", width: 1920, height: 1080, defaultHiDPI: false),
+        ResolutionPreset(label: "2560×1440", width: 2560, height: 1440, defaultHiDPI: false),
+        ResolutionPreset(label: "3840×2160", width: 3840, height: 2160, defaultHiDPI: false)
     ]
 
     private static func isPresetSize(width: Int, height: Int) -> Bool {

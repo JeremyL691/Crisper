@@ -250,6 +250,12 @@ final class PowerAndTopologyMonitor {
 
     // MARK: - Live Sampling
 
+    private struct CoreGraphicsPhysicalSnapshot {
+        let external: Int
+        let builtin: Int
+        let anyPhysicalAsleep: Bool
+    }
+
     /// Samples power, clamshell, and online physical display counts by combining CoreGraphics
     /// online display state (which preserves sleeping and hardware-mirrored physical panels),
     /// Crisper's soft-disconnect state, and the Apple Silicon kernel IOMobileFramebuffer
@@ -261,23 +267,23 @@ final class PowerAndTopologyMonitor {
     ) -> SmartVirtualDisplayInput {
         let onAC = Self.readIsOnACPower()
         let clamshellClosed = Self.readIsClamshellClosed()
-        let (cgOnlineExt, cgOnlineBuiltin) = Self.countCoreGraphicsPhysicalDisplays(
+        let cg = Self.countCoreGraphicsPhysicalDisplays(
             isVirtualDisplay: isVirtualDisplay,
             softDisconnectedUUIDs: softDisconnectedUUIDs
         )
         let kernelExt = Self.countKernelExternalDisplays()
         let activePhysicalExternalCount = SmartVirtualDisplayPolicy.resolveExternalPhysicalCount(
-            cgOnlineExternalCount: cgOnlineExt,
+            cgOnlineExternalCount: cg.external,
             kernelExternalCount: kernelExt,
             softDisconnectedExternalCount: softDisconnectedExternalCount,
-            areScreensAsleep: areScreensAsleep
+            areScreensAsleep: areScreensAsleep || cg.anyPhysicalAsleep
         )
 
         return SmartVirtualDisplayInput(
             isOnACPower: onAC,
             isClamshellClosed: clamshellClosed,
             activePhysicalExternalCount: activePhysicalExternalCount,
-            activeBuiltinCount: cgOnlineBuiltin
+            activeBuiltinCount: cg.builtin
         )
     }
 
@@ -350,18 +356,19 @@ final class PowerAndTopologyMonitor {
     private static func countCoreGraphicsPhysicalDisplays(
         isVirtualDisplay: (CGDirectDisplayID) -> Bool,
         softDisconnectedUUIDs: Set<String>
-    ) -> (external: Int, builtin: Int) {
+    ) -> CoreGraphicsPhysicalSnapshot {
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
-            return (0, 0)
+            return CoreGraphicsPhysicalSnapshot(external: 0, builtin: 0, anyPhysicalAsleep: false)
         }
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetOnlineDisplayList(count, &displayIDs, &count) == .success else {
-            return (0, 0)
+            return CoreGraphicsPhysicalSnapshot(external: 0, builtin: 0, anyPhysicalAsleep: false)
         }
 
         var extCount = 0
         var builtinCount = 0
+        var anyPhysicalAsleep = false
         for id in displayIDs.prefix(Int(count)) {
             if isVirtualDisplay(id) { continue }
             if !softDisconnectedUUIDs.isEmpty,
@@ -371,6 +378,7 @@ final class PowerAndTopologyMonitor {
             }
             if CGDisplayIsBuiltin(id) != 0 {
                 builtinCount += 1
+                if CGDisplayIsAsleep(id) != 0 { anyPhysicalAsleep = true }
                 continue
             }
             let vendor = CGDisplayVendorNumber(id)
@@ -380,8 +388,13 @@ final class PowerAndTopologyMonitor {
             if vendor == headlessFallbackVendor && model == headlessFallbackModel { continue }
             if vendor == 0 && model == 0 { continue }
             extCount += 1
+            if CGDisplayIsAsleep(id) != 0 { anyPhysicalAsleep = true }
         }
-        return (extCount, builtinCount)
+        return CoreGraphicsPhysicalSnapshot(
+            external: extCount,
+            builtin: builtinCount,
+            anyPhysicalAsleep: anyPhysicalAsleep
+        )
     }
 
     private static func displayUUID(for displayID: CGDirectDisplayID) -> String? {

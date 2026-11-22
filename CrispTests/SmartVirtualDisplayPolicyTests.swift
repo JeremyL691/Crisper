@@ -62,7 +62,7 @@ final class SmartVirtualDisplayPolicyTests: XCTestCase {
         XCTAssertEqual(oddWidth.logicalHeight, 1080)
     }
 
-    func testDisabledMasterSwitchStaysOffAcrossAllPowerAndTopologyInputs() {
+    func testDisabledPrimarySwitchStaysOffAcrossAllPowerAndTopologyInputs() {
         let config = SmartVirtualDisplayConfig(isEnabled: false, clamshellGuardEnabled: true)
         let expected = SmartVirtualDisplayDecision(
             phase: .disabled,
