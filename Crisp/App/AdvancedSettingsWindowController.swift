@@ -10,6 +10,7 @@ import SwiftUI
 final class AdvancedSettingsWindowController: NSWindowController, NSWindowDelegate {
     static let virtualDisplaysTab = "display.2"
     static let contentWidth: CGFloat = 520
+    static let defaultContentHeight: CGFloat = 480
     private let displayManager: DisplayManager
     private var displaysWatch: AnyCancellable?
     /// Each tab's full height, as it last reported it.
@@ -48,6 +49,7 @@ final class AdvancedSettingsWindowController: NSWindowController, NSWindowDelega
         tabs.transitionOptions = []
         tabs.onSelect = { [weak self] in self?.fit() }
         tabs.addTabViewItem(tab(AdvancedGeneralTab(), label: String(localized: "General"), symbol: "gearshape"))
+        tabs.addTabViewItem(tab(AdvancedMenuBarTab(), label: String(localized: "Menu Bar"), symbol: "menubar.rectangle"))
         tabs.addTabViewItem(tab(AdvancedKeyboardTab(), label: String(localized: "Keyboard"), symbol: "keyboard"))
         tabs.addTabViewItem(tab(AdvancedVirtualDisplaysTab(), label: String(localized: "Smart Dummy"),
                                 symbol: Self.virtualDisplaysTab))
@@ -60,7 +62,7 @@ final class AdvancedSettingsWindowController: NSWindowController, NSWindowDelega
                 guard let tabs else { return }
                 let show = !advancedSettingsDisplays(displays).isEmpty
                 let shown = tabs.tabViewItems.contains(displaysTab)
-                if show, !shown { tabs.insertTabViewItem(displaysTab, at: min(2, tabs.tabViewItems.count)) }  // after Keyboard
+                if show, !shown { tabs.insertTabViewItem(displaysTab, at: min(3, tabs.tabViewItems.count)) }  // after Keyboard
                 if !show, shown { tabs.removeTabViewItem(displaysTab) }
             }
         }
@@ -101,6 +103,9 @@ final class AdvancedSettingsWindowController: NSWindowController, NSWindowDelega
         .scrollBounceBehavior(.basedOnSize)
         let host = NSHostingController(rootView: root)
         host.sizingOptions = []
+        // Seed a realistic initial content size before the window centers on first open,
+        // so it doesn't center a tiny frame and grow down past the lower half of the screen.
+        host.preferredContentSize = NSSize(width: Self.contentWidth, height: Self.defaultContentHeight)
         host.title = label  // the tab controller passes it on as the window title
         let item = NSTabViewItem(viewController: host)
         item.label = label

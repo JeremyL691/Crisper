@@ -130,6 +130,53 @@ extern IOReturn IOAVServiceWriteI2C(IOAVServiceRef service,
                                     void *inputBuffer,
                                     uint32_t inputBufferSize);
 
+// MARK: - AppleSMC Kernel Interface Struct (80-byte ABI, arm64 + x86_64)
+
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+    uint8_t  major;
+    uint8_t  minor;
+    uint8_t  build;
+    uint8_t  reserved[1];
+    uint16_t release;
+} CrispSMCKeyDataVers_t;
+
+typedef struct {
+    uint16_t version;
+    uint16_t length;
+    uint32_t cpuPLimit;
+    uint32_t gpuPLimit;
+    uint32_t memPLimit;
+} CrispSMCKeyDataPLimitData_t;
+
+typedef struct {
+    uint32_t dataSize;
+    uint32_t dataType;
+    uint8_t  dataAttributes;
+} CrispSMCKeyDataKeyInfo_t;
+
+typedef struct {
+    uint32_t                    key;
+    CrispSMCKeyDataVers_t       vers;
+    CrispSMCKeyDataPLimitData_t pLimitData;
+    CrispSMCKeyDataKeyInfo_t    keyInfo;
+    uint8_t                     result;
+    uint8_t                     status;
+    uint8_t                     data8;
+    uint8_t                     padding;
+    uint32_t                    data32;
+    uint8_t                     bytes[32];
+} CrispSMCKeyData_t;
+
+_Static_assert(sizeof(CrispSMCKeyData_t) == 80, "CrispSMCKeyData_t must be 80 bytes");
+_Static_assert(offsetof(CrispSMCKeyData_t, keyInfo) == 28, "CrispSMCKeyData_t.keyInfo offset must be 28");
+_Static_assert(offsetof(CrispSMCKeyData_t, result) == 40, "CrispSMCKeyData_t.result offset must be 40");
+_Static_assert(offsetof(CrispSMCKeyData_t, data8) == 42, "CrispSMCKeyData_t.data8 offset must be 42");
+_Static_assert(offsetof(CrispSMCKeyData_t, data32) == 44, "CrispSMCKeyData_t.data32 offset must be 44");
+_Static_assert(offsetof(CrispSMCKeyData_t, bytes) == 48, "CrispSMCKeyData_t.bytes offset must be 48");
+
 #pragma clang diagnostic pop
 
 #endif /* Crisp_Bridging_Header_h */

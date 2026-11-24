@@ -5,6 +5,17 @@
 Crisper is built on [Crisp](https://github.com/didriksg/Crisp) by Didrik Galteland,
 released under the MIT License.
 
+## Hardware Monitoring & Menu Bar Utility Inspiration
+
+Portions of Crisper's hardware telemetry architecture, menu bar utility controls,
+and panel ergonomics are inspired by the following open-source projects, each
+released under the MIT License:
+
+- **[Stats](https://github.com/exelban/stats)** by Serhiy Mytrovtsiy (`exelban/stats`, MIT License) — SMC temperature reading, IOKit/Mach hardware telemetry patterns, and stacked/label menu bar widget ergonomics.
+- **[eul](https://github.com/gao-sun/eul)** by Gao Sun (`gao-sun/eul`, MIT License) — Minimalist compact macOS status bar typography and spacing inspiration.
+- **[OnlySwitch](https://github.com/jacklandrin/OnlySwitch)** by Jacklandrin (MIT License) — Menu bar quick utility toggles including Power Saving Mode and keyboard/screen cleaning ergonomics.
+- **LUCE** (MIT License) — Lightweight macOS menu bar utility layout and hardware card inspiration.
+
 ## FreeDisplay
 
 Crisp began as a fork of [FreeDisplay](https://github.com/huberdf/FreeDisplay)

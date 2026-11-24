@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The three tabs of the Advanced Settings window (AdvancedSettingsWindowController).
+// The tabs of the Advanced Settings window (AdvancedSettingsWindowController).
 // A setting goes here when Crisp works fully without it: it fixes an unusual monitor,
 // tunes a default, or serves scripts and power users (docs/DESIGN.md). A row that does
 // not apply on this Mac right now is hidden.
@@ -10,6 +10,7 @@ import SwiftUI
 struct AdvancedGeneralTab: View {
     @ObservedObject private var settings = SettingsService.shared
     @ObservedObject private var autoBrightness = AutoBrightnessService.shared
+    @ObservedObject private var coreBrightness = CoreBrightnessService.shared
     @EnvironmentObject var displayManager: DisplayManager
     @State private var cliInstalled = CrispctlInstaller.isInstalled
 
@@ -91,30 +92,30 @@ struct AdvancedGeneralTab: View {
                 // Hiding the sliders does not disable the volume keys.
                 Toggle("Show Volume Sliders", isOn: $settings.showVolumeSliders)
             }
-            if showsAutoDisconnect {
+            if showsAutoDisconnect || coreBrightness.trueToneAvailable {
                 Section("Displays") {
-                    CenteredToggle(title: "Auto-Disconnect Built-in",
-                                   detail: Text("Turns the built-in display off while an external display is connected"),
-                                   isOn: $settings.disconnectBuiltinWhenDocked)
-                    .onChange(of: settings.disconnectBuiltinWhenDocked) { _, isOn in
-                        if isOn {
-                            PhysicalDisplayToggleService.shared.reapplyParkedIfDocked()
-                        } else {
-                            PhysicalDisplayToggleService.shared.clearParked()
+                    if coreBrightness.trueToneAvailable {
+                        CenteredToggle(
+                            title: "True Tone",
+                            detail: Text("Automatically adapts display color temperature to ambient lighting"),
+                            isOn: Binding(
+                                get: { coreBrightness.trueToneEnabled },
+                                set: { coreBrightness.setTrueTone($0) }
+                            )
+                        )
+                    }
+                    if showsAutoDisconnect {
+                        CenteredToggle(title: "Auto-Disconnect Built-in",
+                                       detail: Text("Turns the built-in display off while an external display is connected"),
+                                       isOn: $settings.disconnectBuiltinWhenDocked)
+                        .onChange(of: settings.disconnectBuiltinWhenDocked) { _, isOn in
+                            if isOn {
+                                PhysicalDisplayToggleService.shared.reapplyParkedIfDocked()
+                            } else {
+                                PhysicalDisplayToggleService.shared.clearParked()
+                            }
                         }
                     }
-                }
-            }
-            Section("Menu Bar") {
-                if showsSwitches {
-                    CenteredToggle(title: "Show Connection Switches",
-                                   detail: Text("A switch on each display row that disconnects it"),
-                                   isOn: $settings.showConnectionSwitches)
-                }
-                if !KeepAwakeService.isDisabledByPolicy {
-                    CenteredToggle(title: "Keep Awake in Menu Bar",
-                                   detail: Text("Click the cup to toggle Keep Awake, right-click it to switch mode"),
-                                   isOn: $settings.showKeepAwakeInMenuBar)
                 }
             }
             if CrispctlInstaller.isAvailable {
@@ -134,8 +135,268 @@ struct AdvancedGeneralTab: View {
         .onAppear {
             cliInstalled = CrispctlInstaller.isInstalled
             settings.launchAtLogin = LaunchService.shared.isEnabled  // may change in System Settings
+            coreBrightness.refresh()
         }
         .frame(maxWidth: .infinity)  // the window sets the width, scroll bar included
+    }
+}
+
+// MARK: - Menu Bar
+
+struct AdvancedMenuBarTab: View {
+    @ObservedObject private var settings = SettingsService.shared
+    @ObservedObject private var monitor = SystemMonitorService.shared
+    @ObservedObject private var helper = PrivilegedHelperService.shared
+
+    private var previewTemperatureText: String {
+        TemperatureFormatter.format(
+            celsius: monitor.cpuTemperatureC ?? 48.5,
+            unit: settings.temperatureUnit,
+            showDecimal: settings.showTemperatureDecimal
+        )
+    }
+
+    var body: some View {
+        let showsSwitches = PhysicalDisplayToggleService.shared.isSupported
+        let showsKeepAwake = !KeepAwakeService.isDisabledByPolicy
+        Form {
+            menuBarIconSection
+            systemMonitorSection
+            if showsSwitches || showsKeepAwake {
+                menuBarExtrasSection(showsSwitches: showsSwitches, showsKeepAwake: showsKeepAwake)
+            }
+            privilegedUtilitiesSection
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)  // the window's scroll view scrolls; this one took the wheel
+        .onAppear {
+            helper.refreshStatus()
+        }
+        .frame(maxWidth: .infinity)  // the window sets the width, scroll bar included
+    }
+
+    private var menuBarIconSection: some View {
+        Section("Menu Bar Icon") {
+            Picker("Display Style", selection: $settings.menuBarDisplayMode) {
+                Text("CPU Temperature").tag(MenuBarDisplayMode.cpuTemperature)
+                Text("Icon & CPU Temperature").tag(MenuBarDisplayMode.iconAndTemperature)
+                Text("Custom Icon").tag(MenuBarDisplayMode.iconOnly)
+            }
+            if settings.menuBarDisplayMode == .cpuTemperature {
+                Picker("Temperature Layout", selection: $settings.menuBarTemperatureStyle) {
+                    Text("Stacked (CPU)").tag(MenuBarTemperatureStyle.stacked)
+                    Text("Vertical Tag").tag(MenuBarTemperatureStyle.verticalTag)
+                    Text("Compact").tag(MenuBarTemperatureStyle.compact)
+                }
+            }
+            LabeledContent("Preview") {
+                menuBarPreviewCapsule
+            }
+            if settings.menuBarDisplayMode != .cpuTemperature {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Icon Symbol")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    symbolPickerGrid
+                }
+                .padding(.vertical, 2)
+            }
+            if settings.menuBarDisplayMode != .iconOnly {
+                CenteredToggle(
+                    title: "Thermal Color Tint",
+                    detail: Text("Tint the temperature amber above 70°C and red above 85°C"),
+                    isOn: $settings.menuBarThermalColor
+                )
+            }
+            Picker("Temperature Unit", selection: $settings.temperatureUnit) {
+                ForEach(TemperatureUnit.allCases, id: \.self) { unit in
+                    Text(verbatim: unit.symbol).tag(unit)
+                }
+            }
+            .pickerStyle(.segmented)
+            CenteredToggle(
+                title: "Show Decimal Place",
+                detail: Text("Display tenths of a degree (e.g. 49.8°C vs 50°C)"),
+                isOn: $settings.showTemperatureDecimal
+            )
+            Picker("Menu Bar Refresh Interval", selection: $settings.menuBarTempRefreshInterval) {
+                Text(verbatim: "2s").tag(2.0)
+                Text(verbatim: "2.5s").tag(2.5)
+                Text(verbatim: "3s").tag(3.0)
+                Text(verbatim: "5s").tag(5.0)
+            }
+        }
+    }
+
+    private var previewValueColor: Color {
+        guard settings.menuBarThermalColor else { return .primary }
+        switch ThermalColorZone.from(celsius: monitor.cpuTemperatureC ?? 49.8) {
+        case .normal: return .primary
+        case .warm: return .orange
+        case .hot: return .red
+        }
+    }
+
+    private var menuBarPreviewCapsule: some View {
+        Group {
+            switch settings.menuBarDisplayMode {
+            case .cpuTemperature:
+                switch settings.menuBarTemperatureStyle {
+                case .stacked:
+                    VStack(spacing: 1) {
+                        Text(verbatim: "CPU")
+                            .font(.system(size: 7, weight: .medium))
+                            .tracking(0.5)
+                            .foregroundStyle(.primary.opacity(0.72))
+                        Text(verbatim: previewTemperatureText)
+                            .font(.system(size: 11.5, weight: .regular).monospacedDigit())
+                            .foregroundStyle(previewValueColor)
+                    }
+                case .verticalTag:
+                    HStack(spacing: 2.5) {
+                        VStack(spacing: -1) {
+                            Text(verbatim: "C")
+                            Text(verbatim: "P")
+                            Text(verbatim: "U")
+                        }
+                        .font(.system(size: 5.5, weight: .medium))
+                        .foregroundStyle(.primary.opacity(0.72))
+                        Text(verbatim: previewTemperatureText)
+                            .font(.system(size: 12.5, weight: .regular).monospacedDigit())
+                            .foregroundStyle(previewValueColor)
+                    }
+                case .compact:
+                    Text(verbatim: previewTemperatureText)
+                        .font(.system(size: 13, weight: .regular).monospacedDigit())
+                        .foregroundStyle(previewValueColor)
+                }
+            case .iconAndTemperature:
+                HStack(spacing: 2.5) {
+                    Image(systemName: settings.menuBarCustomSymbol)
+                        .font(.system(size: 12.5, weight: .regular))
+                    Text(verbatim: previewTemperatureText)
+                        .font(.system(size: 12.5, weight: .regular).monospacedDigit())
+                        .foregroundStyle(previewValueColor)
+                }
+            case .iconOnly:
+                Image(systemName: settings.menuBarCustomSymbol)
+                    .font(.system(size: 13, weight: .regular))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(Color.primary.opacity(0.08))
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+        )
+    }
+
+    private var symbolPickerGrid: some View {
+        let options = MenuBarSymbolCatalog.options
+        let rows = stride(from: 0, to: options.count, by: 4).map { start in
+            Array(options[start..<min(start + 4, options.count)])
+        }
+        return VStack(spacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) {
+                    ForEach(row) { option in
+                        let isSelected = settings.menuBarCustomSymbol == option.symbol
+                        Button {
+                            settings.menuBarCustomSymbol = option.symbol
+                        } label: {
+                            Image(systemName: option.symbol)
+                                .font(.system(size: 14, weight: .medium))
+                                .frame(maxWidth: .infinity, minHeight: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .strokeBorder(
+                                            isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                                            lineWidth: isSelected ? 1.5 : 0.5
+                                        )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(option.label)
+                        .accessibilityLabel(option.label)
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                    }
+                }
+            }
+        }
+    }
+
+    private var systemMonitorSection: some View {
+        Section("System Monitor") {
+            CenteredToggle(
+                title: "Show Hardware Monitor in Panel",
+                detail: Text("Displays live CPU, GPU, disk, and memory cards in the menu bar panel"),
+                isOn: $settings.showSystemMonitor
+            )
+            Picker("Panel Refresh Interval", selection: $settings.monitorRefreshInterval) {
+                Text(verbatim: "1s").tag(1.0)
+                Text(verbatim: "1.5s").tag(1.5)
+                Text(verbatim: "2s").tag(2.0)
+                Text(verbatim: "3s").tag(3.0)
+            }
+        }
+    }
+
+    private func menuBarExtrasSection(showsSwitches: Bool, showsKeepAwake: Bool) -> some View {
+        Section("Menu Bar Extras") {
+            if showsSwitches {
+                CenteredToggle(
+                    title: "Show Connection Switches",
+                    detail: Text("A switch on each display row that disconnects it"),
+                    isOn: $settings.showConnectionSwitches
+                )
+            }
+            if showsKeepAwake {
+                CenteredToggle(
+                    title: "Keep Awake in Menu Bar",
+                    detail: Text("Click the cup to toggle Keep Awake, right-click it to switch mode"),
+                    isOn: $settings.showKeepAwakeInMenuBar
+                )
+            }
+        }
+    }
+
+    private var privilegedUtilitiesSection: some View {
+        Section("Privileged Utilities") {
+            CenteredRow(
+                title: "Power Saving Mode & RAM Free Up",
+                detail: privilegedStatusText
+            ) {
+                if helper.isAuthorized {
+                    Button("Remove Authorization", role: .destructive) {
+                        _ = helper.uninstallAuthorization()
+                    }
+                    .disabled(helper.isBusy)
+                } else {
+                    Button("Authorize Once…") {
+                        _ = helper.installAuthorization()
+                    }
+                    .disabled(helper.isBusy)
+                }
+            }
+            if let error = helper.lastError, !error.isEmpty {
+                Text(verbatim: error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var privilegedStatusText: Text {
+        if helper.isAuthorized {
+            return Text("Authorized — Power Saving Mode and Free Up run without repeated password prompts.")
+        }
+        return Text("Not authorized — authorize once to toggle Power Saving Mode and purge memory without prompts.")
     }
 }
 
@@ -151,9 +412,14 @@ struct AdvancedKeyboardTab: View {
     // AXIsProcessTrusted() is not observable, so it is re-read when Crisp becomes active.
     @State private var isTrusted = AXIsProcessTrusted()
 
+    /// Physical displays only: Smart Dummy has no hardware brightness/volume controls.
+    private var physicalDisplays: [DisplayInfo] {
+        displayManager.displays.filter { !VirtualDisplayService.shared.isVirtualDisplay($0.displayID) }
+    }
+
     /// Externals with speaker volume, which the volume keys can drive.
     private var volumeDisplays: [DisplayInfo] {
-        displayManager.displays.filter { !$0.isBuiltin && $0.volumeSupported }
+        physicalDisplays.filter { !$0.isBuiltin && $0.volumeSupported }
     }
 
     var body: some View {
@@ -165,7 +431,7 @@ struct AdvancedKeyboardTab: View {
                     }
                     // Keyed by displayUUID so the choice survives reconnects.
                     if settings.brightnessKeyTarget == .selected {
-                        ForEach(displayManager.displays) { display in
+                        ForEach(physicalDisplays) { display in
                             Toggle(display.name, isOn: Binding(
                                 get: { settings.brightnessKeySelectedDisplayUUIDs.contains(display.displayUUID) },
                                 set: { isOn in
@@ -282,7 +548,7 @@ struct AdvancedDisplaysTab: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 16)
-            let showsArrange = displayManager.displays.count > 1
+            let showsArrange = displays.count > 1
             ZStack(alignment: .bottomLeading) {
                 // Centred on the whole width while the row fits, scrolled when it does not.
                 // The same inset on both sides keeps the pictures clear of the button.

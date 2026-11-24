@@ -61,6 +61,15 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
         static let showCombinedVolume     = "crisp.showCombinedVolume"
         static let showConnectionSwitches = "crisp.showConnectionSwitches"
         static let showKeepAwakeInMenuBar = "crisp.showKeepAwakeInMenuBar"
+        static let menuBarDisplayMode     = "crisp.menuBarDisplayMode"
+        static let menuBarTemperatureStyle = "crisp.menuBarTemperatureStyle"
+        static let menuBarThermalColor    = "crisp.menuBarThermalColor"
+        static let menuBarCustomSymbol    = "crisp.menuBarCustomSymbol"
+        static let temperatureUnit        = "crisp.temperatureUnit"
+        static let showTemperatureDecimal = "crisp.showTemperatureDecimal"
+        static let showSystemMonitor      = "crisp.showSystemMonitor"
+        static let monitorRefreshInterval = "crisp.monitorRefreshInterval"
+        static let menuBarTempRefreshInterval = "crisp.menuBarTempRefreshInterval"
         static let crossDisplayGaps       = "crisp.crossDisplayGaps"
         static let disconnectBuiltinWhenDocked = "crisp.disconnectBuiltinWhenDocked"
         static let ddcCacheTTL            = "crisp.ddcCacheTTL"
@@ -131,6 +140,51 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
     /// A cup in the menu bar that turns Keep Awake on and off (#266). Off by default.
     @Published var showKeepAwakeInMenuBar: Bool = false {
         didSet { defaults.set(showKeepAwakeInMenuBar, forKey: Keys.showKeepAwakeInMenuBar) }
+    }
+
+    /// How the primary Crisper menu bar status item renders (temperature, icon + temp, or icon only).
+    @Published var menuBarDisplayMode: MenuBarDisplayMode = .cpuTemperature {
+        didSet { defaults.set(menuBarDisplayMode.rawValue, forKey: Keys.menuBarDisplayMode) }
+    }
+
+    /// Layout style for the CPU temperature readout (`stacked`, `verticalTag`, or `compact`).
+    @Published var menuBarTemperatureStyle: MenuBarTemperatureStyle = .stacked {
+        didSet { defaults.set(menuBarTemperatureStyle.rawValue, forKey: Keys.menuBarTemperatureStyle) }
+    }
+
+    /// Optional subtle thermal color coding (amber >= 70°C, red >= 85°C); off stays monochrome.
+    @Published var menuBarThermalColor: Bool = false {
+        didSet { defaults.set(menuBarThermalColor, forKey: Keys.menuBarThermalColor) }
+    }
+
+    /// SF Symbol name used when the menu bar displays an icon.
+    @Published var menuBarCustomSymbol: String = MenuBarSymbolCatalog.defaultSymbol {
+        didSet { defaults.set(menuBarCustomSymbol, forKey: Keys.menuBarCustomSymbol) }
+    }
+
+    /// Temperature scale (°C / °F) for the menu bar and system monitor cards.
+    @Published var temperatureUnit: TemperatureUnit = .celsius {
+        didSet { defaults.set(temperatureUnit.rawValue, forKey: Keys.temperatureUnit) }
+    }
+
+    /// Whether temperatures show one decimal place (e.g. `49.8°C` vs `50°C`).
+    @Published var showTemperatureDecimal: Bool = true {
+        didSet { defaults.set(showTemperatureDecimal, forKey: Keys.showTemperatureDecimal) }
+    }
+
+    /// Whether the 2×2 hardware monitor cards appear in the menu bar panel.
+    @Published var showSystemMonitor: Bool = true {
+        didSet { defaults.set(showSystemMonitor, forKey: Keys.showSystemMonitor) }
+    }
+
+    /// Refresh interval in seconds for the hardware monitor while the panel is open.
+    @Published var monitorRefreshInterval: Double = 1.5 {
+        didSet { defaults.set(monitorRefreshInterval, forKey: Keys.monitorRefreshInterval) }
+    }
+
+    /// Refresh interval in seconds for background CPU temperature polling in the menu bar.
+    @Published var menuBarTempRefreshInterval: Double = 2.5 {
+        didSet { defaults.set(menuBarTempRefreshInterval, forKey: Keys.menuBarTempRefreshInterval) }
     }
 
     /// Pointer moves past display edges with no display behind them. Also starts and stops
@@ -339,6 +393,31 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
         showCombinedVolume = defaults.bool(forKey: Keys.showCombinedVolume)
         showConnectionSwitches = defaults.bool(forKey: Keys.showConnectionSwitches)
         showKeepAwakeInMenuBar = defaults.bool(forKey: Keys.showKeepAwakeInMenuBar)
+        menuBarDisplayMode = defaults.string(forKey: Keys.menuBarDisplayMode)
+            .flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .cpuTemperature
+        menuBarTemperatureStyle = defaults.string(forKey: Keys.menuBarTemperatureStyle)
+            .flatMap(MenuBarTemperatureStyle.init(rawValue:)) ?? .stacked
+        menuBarThermalColor = defaults.bool(forKey: Keys.menuBarThermalColor)
+        menuBarCustomSymbol = defaults.string(forKey: Keys.menuBarCustomSymbol)
+            .map(MenuBarSymbolCatalog.resolved) ?? MenuBarSymbolCatalog.defaultSymbol
+        temperatureUnit = defaults.string(forKey: Keys.temperatureUnit)
+            .flatMap(TemperatureUnit.init(rawValue:)) ?? .celsius
+        showTemperatureDecimal = defaults.object(forKey: Keys.showTemperatureDecimal) != nil
+            ? defaults.bool(forKey: Keys.showTemperatureDecimal) : true
+        showSystemMonitor = defaults.object(forKey: Keys.showSystemMonitor) != nil
+            ? defaults.bool(forKey: Keys.showSystemMonitor) : true
+        if defaults.object(forKey: Keys.monitorRefreshInterval) != nil {
+            let stored = defaults.double(forKey: Keys.monitorRefreshInterval)
+            monitorRefreshInterval = (stored.isFinite && stored >= 0.5 && stored <= 30.0) ? stored : 1.5
+        } else {
+            monitorRefreshInterval = 1.5
+        }
+        if defaults.object(forKey: Keys.menuBarTempRefreshInterval) != nil {
+            let stored = defaults.double(forKey: Keys.menuBarTempRefreshInterval)
+            menuBarTempRefreshInterval = (stored.isFinite && stored >= 0.5 && stored <= 60.0) ? stored : 2.5
+        } else {
+            menuBarTempRefreshInterval = 2.5
+        }
         crossDisplayGaps = defaults.bool(forKey: Keys.crossDisplayGaps)
         disconnectBuiltinWhenDocked = defaults.bool(forKey: Keys.disconnectBuiltinWhenDocked)
         ddcCacheTTL = defaults.object(forKey: Keys.ddcCacheTTL) != nil

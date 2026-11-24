@@ -45,38 +45,94 @@ enum StatusItemHighlight {
     }
 
     /// The pill's frame in the button's own coordinates, sized off the menu bar
-    /// (not the button: a notched bar is a different height).
+    /// (not the button: a notched bar is a different height). Falls back to
+    /// `NSStatusBar.system.thickness` in full-screen Spaces where visibleFrame == frame.
     @MainActor
     private static func frame(in button: NSStatusBarButton) -> CGRect? {
         guard let window = button.window, let screen = window.screen else { return nil }
-        let barHeight = screen.frame.maxY - screen.visibleFrame.maxY
+        let rawBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+        let usesFallback = rawBarHeight <= 2 * barInset
+        let barHeight = usesFallback ? NSStatusBar.system.thickness : rawBarHeight
         guard barHeight > 2 * barInset else { return nil }
         let height = barHeight - 2 * barInset
-        let buttonTop = window.convertToScreen(button.convert(button.bounds, to: nil)).maxY
-        let top = buttonTop - (screen.frame.maxY - barInset)
+        let top: CGFloat
+        if usesFallback {
+            top = (button.bounds.height - height) / 2
+        } else {
+            let buttonTop = window.convertToScreen(button.convert(button.bounds, to: nil)).maxY
+            top = buttonTop - (screen.frame.maxY - barInset)
+        }
         return CGRect(x: 0,
                       y: button.layer?.isGeometryFlipped == true ? top : button.bounds.height - top - height,
                       width: button.bounds.width,
                       height: height)
     }
 
-    /// Widens the item's window by the overhang, once, so the pill isn't
-    /// clipped. Call before the item is ever lit: widening later visibly shifts
-    /// the icon.
+    /// Resets cached widening geometry before a status-item layout mode or length change.
     @MainActor
-    static func makeRoom(for button: NSStatusBarButton?) {
+    static func resetLayoutState() {
+        layoutState = nil
+    }
+
+    /// Widens the item's window by the overhang once per natural width so the pill
+    /// isn't clipped. Safe to call after dynamic width changes (switching between
+    /// icon and CPU temperature modes) without compounding overhangs.
+    @MainActor
+    static func makeRoom(for button: NSStatusBarButton?, baseLength: CGFloat? = nil) {
         guard SystemLook.isMacOS27OrLater, let button, let window = button.window else { return }
-        guard button.bounds.width < window.frame.width || widened != window.frame.width else { return }
+        let windowWidth = window.frame.width
+        let intrinsicWidth = button.intrinsicContentSize.width
+        guard windowWidth > 0 else { return }
+        if let state = layoutState,
+           abs(windowWidth - state.widenedWidth) < 0.5,
+           state.matches(baseLength: baseLength, intrinsicWidth: intrinsicWidth) {
+            syncButtonFrame(button, width: windowWidth)
+            refreshPillFrameIfLit(on: button)
+            return
+        }
+        if let baseLength, baseLength > 0, windowWidth >= baseLength + 2 * overhang - 0.5 {
+            layoutState = LayoutState(baseLength: baseLength, intrinsicWidth: intrinsicWidth, widenedWidth: windowWidth)
+            syncButtonFrame(button, width: windowWidth)
+            refreshPillFrameIfLit(on: button)
+            return
+        }
         var frame = window.frame
         frame.origin.x -= overhang
         frame.size.width += 2 * overhang
         window.setFrame(frame, display: false)
-        widened = frame.width
-        button.frame = NSRect(x: 0, y: button.frame.minY, width: frame.width, height: button.frame.height)
+        layoutState = LayoutState(baseLength: baseLength, intrinsicWidth: intrinsicWidth, widenedWidth: frame.width)
+        syncButtonFrame(button, width: frame.width)
+        refreshPillFrameIfLit(on: button)
     }
 
-    /// The widened window width, so the widening happens once per layout.
-    @MainActor private static var widened: CGFloat = 0
+    @MainActor
+    private static func syncButtonFrame(_ button: NSStatusBarButton, width: CGFloat) {
+        if abs(button.frame.origin.x) > 0.5 || abs(button.frame.width - width) > 0.5 {
+            button.frame = NSRect(x: 0, y: button.frame.minY, width: width, height: button.frame.height)
+        }
+    }
+
+    @MainActor
+    private static func refreshPillFrameIfLit(on button: NSStatusBarButton) {
+        guard let host = button.layer, pill(in: host) != nil else { return }
+        draw(true, on: button)
+    }
+
+    private struct LayoutState {
+        let baseLength: CGFloat?
+        let intrinsicWidth: CGFloat
+        let widenedWidth: CGFloat
+
+        func matches(baseLength: CGFloat?, intrinsicWidth: CGFloat) -> Bool {
+            if let lhs = self.baseLength, let rhs = baseLength {
+                return abs(lhs - rhs) < 0.5
+            }
+            return self.baseLength == nil && baseLength == nil && abs(self.intrinsicWidth - intrinsicWidth) < 0.5
+        }
+    }
+
+    /// Last measured intrinsic & widened widths so widening happens once per layout state.
+    @MainActor private static var layoutState: LayoutState?
 
     private static let name = "crisp.statusItemHighlight"
 

@@ -48,10 +48,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Whether the OSD banner is asking for the menu bar item to be lit. The
     /// open panel asks for the same light, so both are read together.
     private var bannerLightsStatusItem = false
-    /// Drives the menu-bar Keep Awake indicator (keep-awake indicator).
-    private var keepAwakeCancellable: AnyCancellable?
-    private var keepAwakeBadge: NSView?
     private var keepAwakeItem: KeepAwakeStatusItem?
+    private var statusItemCancellables = Set<AnyCancellable>()
+    private var lastStatusRender: StatusItemRenderState?
+    private var lastStatusLayoutKey: StatusItemLayoutKey?
+    private var lastStatusItemLength: CGFloat?
+    private var statusBarMetricView: StatusBarMetricView?
+    private var signalSources: [DispatchSourceSignal] = []
     private var panel: MenuPanel?
     /// The panel is NEVER ordered out once warmed: taking the backdrop surface
     /// off screen replays WindowServer's materialize bloom. Hidden = alpha 0 +
@@ -131,11 +134,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // NSWorkspace (whose entries linger during teardown and race with fast
         // relaunches), flock is released by the kernel the moment a process dies.
         let lockPath = NSTemporaryDirectory() + "crisper.lock"
-        let lockFD = open(lockPath, O_CREAT | O_RDWR, 0o600)
+        let lockFD = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if lockFD == -1 || flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
+            if lockFD >= 0 { close(lockFD) }
             exit(0)
         }
         // The descriptor stays open for the app's lifetime to hold the lock.
+        installTerminationSignalHandlers()
 
         do {
             try controlServer.start()
@@ -215,6 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         setupStartupBehavior()
+        SystemMonitorService.shared.start()
         setupStatusItem()
 
         // Re-anchor the open panel when screens change: switching the main
@@ -278,14 +284,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // automatic updates are disabled in Crisper).
         _ = UpdateService.shared
 
-        // Start Keep Awake and the Smart Dummy power/topology monitor and clamshell guard engine.
+        // Recover from any prior crash/SIGKILL that left kernel clamshell sleep disabled,
+        // then start Keep Awake and the Smart Dummy power/topology monitor.
+        ClamshellGuardService.shared.resetStaleDisableIfNeeded()
         KeepAwakeService.shared.startMonitoring()
         VirtualDisplayService.shared.startMonitoring()
+    }
 
+    private func installTerminationSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                MainActor.assumeIsolated {
+                    NSApp.terminate(nil)
+                }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     /// One-shot re-sync of everything that can drift while the panel is closed
-    /// (Night Shift/True Tone, DDC brightness changed externally). Reads run off
+    /// (Dark Mode/True Tone, DDC brightness changed externally). Reads run off
     /// the main thread; called at the click in showPanel.
     private func refreshExternalState() {
         CoreBrightnessService.shared.refresh()
@@ -310,11 +331,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        signalSources.forEach { $0.cancel() }
+        signalSources.removeAll()
         controlServer.stop()
         for obs in wakeObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
         BrightnessKeyService.shared.stop()
+        CleaningModeService.shared.stopAll()
+        SystemMonitorService.shared.shutdown()
         // Drop EDR overlays and restore SDR on externals Crisp switched to HDR,
         // so no monitor is left bright with no boost and no DDC control.
         BrightnessBoostService.shared.prepareForTermination()
@@ -323,6 +348,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // a mirror of a display that just vanished.
         MirroredModeService.shared.teardownAll()
         KeepAwakeService.shared.shutdown()
+        // Ensure at least one physical display is online before Smart Dummy tears down,
+        // preventing a persistent zero-display blackout after quit.
+        PhysicalDisplayToggleService.shared.restoreAtLeastOnePhysicalDisplaySync()
         VirtualDisplayService.shared.shutdown()
     }
 
@@ -380,16 +408,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Status item + panel
 
     private func setupStatusItem() {
-        // macOS 27 sizes a menu bar item around its image, and its lit pill
-        // follows that width. A square item is 11 pt narrower than a native one
-        // carrying the same symbol, which a fixed length cannot follow.
-        let length = SystemLook.isMacOS27OrLater ? NSStatusItem.variableLength : NSStatusItem.squareLength
-        let item = NSStatusBar.system.statusItem(withLength: length)
-        // Not "display": that's the native Displays module icon, two identical
-        // icons in the menu bar is confusing. Screen-with-sparkles keeps the vibe.
-        let icon = NSImage(systemSymbolName: "sparkles.tv", accessibilityDescription: "Crisper")
-        icon?.isTemplate = true
-        item.button?.image = icon
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Action stays wired for accessibility (AXPress); real clicks are
         // intercepted below and never reach the button.
         item.button?.target = self
@@ -412,11 +431,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #if compiler(>=6.4)
         if #available(macOS 27.0, *) { item.expandedInterfaceDelegate = self }
         #endif
-        // Needs the button laid out first (it has no width until then): widens the
-        // clipping window before anything draws.
-        DispatchQueue.main.async { [weak item] in
-            StatusItemHighlight.makeRoom(for: item?.button)
-        }
+        wireStatusItemAppearance()
         if #available(macOS 26.0, *) {
             OSDBannerService.shared.statusItem = item
             OSDBannerService.shared.setHighlight = { [weak self] lit in
@@ -440,51 +455,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Small dot on the icon shows Keep Awake is on, at a glance. (keep-awake indicator)
-        updateStatusIcon(active: KeepAwakeService.shared.isActive, animated: false)
-        // The cup (#266) already says Keep Awake is on, so the dot hides while it shows.
-        keepAwakeCancellable = KeepAwakeService.shared.$isActive
-            .combineLatest(SettingsService.shared.$showKeepAwakeInMenuBar)
-            .sink { [weak self] active, cup in self?.updateStatusIcon(active: active && !cup, animated: true) }
         keepAwakeItem = KeepAwakeStatusItem()
-    }
-
-    /// Fades a small orange dot in/out over the (unchanged) menu-bar icon to reflect Keep Awake.
-    /// Only the dot animates; the base symbol stays put. (keep-awake indicator)
-    private func updateStatusIcon(active: Bool, animated: Bool) {
-        guard let button = statusItem?.button else { return }
-        let badge = keepAwakeBadge ?? makeKeepAwakeBadge(on: button)
-        keepAwakeBadge = badge
-        let target: CGFloat = active ? 1 : 0
-        guard animated else { badge.alphaValue = target; return }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            badge.animator().alphaValue = target
-        }
-    }
-
-    /// A small orange dot pinned to the icon's bottom-right corner, layer-backed so its alpha can
-    /// animate. Starts hidden (alpha 0); updateStatusIcon fades it in when Keep Awake turns on.
-    /// (keep-awake indicator)
-    private func makeKeepAwakeBadge(on button: NSStatusBarButton) -> NSView {
-        let d: CGFloat = 6
-        let dot = NSView()
-        dot.wantsLayer = true
-        dot.layer?.backgroundColor = NSColor.systemOrange.cgColor
-        dot.layer?.cornerRadius = d / 2
-        dot.alphaValue = 0
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(dot)
-        // Pinned to the centred icon, not the button: the macOS 27 button is wider and taller.
-        let icon = button.image?.size ?? .zero
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: d),
-            dot.heightAnchor.constraint(equalToConstant: d),
-            dot.trailingAnchor.constraint(equalTo: button.centerXAnchor, constant: icon.width / 2 + 1),
-            dot.bottomAnchor.constraint(equalTo: button.centerYAnchor, constant: icon.height / 2 + 1)
-        ])
-        return dot
     }
 
     private var isWarmed = false
@@ -713,37 +684,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             })
         }
         blocks.append(block("reconnect") { ReconnectDisplaysSection() })
-        if CoreBrightnessService.shared.darkModeAvailable
-            || CoreBrightnessService.shared.nightShiftAvailable
-            || CoreBrightnessService.shared.trueToneAvailable {
-            blocks.append(block("effects") { ScreenEffectsView() })
+        blocks.append(block("effects") {
+            ScreenEffectsView(onClosePanel: { [weak self] in self?.closePanel() })
+        })
+        let sysmonitor = block("sysmonitor", isOpen: { SettingsService.shared.showSystemMonitor }) {
+            SystemMonitorView(state: state)
         }
+        sysmonitor.liveInFlight = true
+        blocks.append(sysmonitor)
+        blocks.append(block("diskdetail", isOpen: {
+            SettingsService.shared.showSystemMonitor && state.showDiskDetail
+        }) {
+            DiskDetailBlock(onClosePanel: { [weak self] in self?.closePanel() })
+        })
         blocks.append(block("controlsDivider") { SectionDivider() })
         blocks += keepAwakeBlocks()
         blocks.append(block("smartdummy") {
             VirtualDisplayView()
         })
-        let settingshead = block("settingshead") {
-            VStack(alignment: .leading, spacing: 0) {
-                SectionDivider()
-                ExpandableRowStateful(icon: "gearshape.fill", iconActive: false,
-                                      label: "Settings", state: state, key: \.showSettings)
-            }
-        }
-        settingshead.liveInFlight = true
-        blocks.append(settingshead)
-        blocks.append(block("settingsrows", isOpen: { state.showSettings }) {
-            // The panel stays open on a click inside it and sits above normal windows,
-            // so close it first.
-            SettingsView(openAdvancedSettings: { [weak self] in
+        blocks.append(block("update") { UpdateBlockView() })
+
+        let footer = block("footer") {
+            PanelFooterBlock(openSettings: { [weak self] in
                 self?.closePanel()
                 self?.advancedSettings.show()
             })
-            .padding(.leading, 8)
-        })
-        blocks.append(block("update") { UpdateBlockView() })
-
-        let footer = block("footer") { PanelFooterBlock() }
+        }
         canvas.setBlocks(blocks, footer: footer)
         canvas.snapToTargets()
     }
@@ -765,6 +731,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in self?.canvas.refreshAppearance() }
         }
         SettingsService.shared.$showVolumeSliders
+            .dropFirst()
+            .sink { [weak self] _ in self?.canvas.requestApply() }
+            .store(in: &canvasCancellables)
+        SettingsService.shared.$showSystemMonitor
             .dropFirst()
             .sink { [weak self] _ in self?.canvas.requestApply() }
             .store(in: &canvasCancellables)
@@ -920,6 +890,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         p.orderFrontRegardless()
         p.makeKey()
         isPanelShown = true
+        SystemMonitorService.shared.setPanelVisible(true)
         // The panel carries brightness and volume on its own sliders, so the
         // OSD stays away while it is open.
         BrightnessHUDService.shared.suppressed = true
@@ -930,6 +901,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // toggle) on every open; the panel content mounts once, so their .onAppear
         // won't re-fire here.
         NotificationCenter.default.post(name: .crispPanelDidOpen, object: nil)
+        // Re-arm the brightness key tap if Accessibility permission was granted since launch.
+        if AXIsProcessTrusted() { BrightnessKeyService.shared.start() }
 
         // Re-probes DDC volume for externals that haven't answered yet: the
         // connect-time probe can land in the post-link-training garbage window,
@@ -984,6 +957,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func closePanel() {
         guard let p = panel, isPanelShown else { return }
         isPanelShown = false
+        SystemMonitorService.shared.setPanelVisible(false)
         endStatusItemSession()
         BrightnessHUDService.shared.suppressed = false
         // The banner may be up, and it holds the same light.
@@ -1011,6 +985,179 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSEvent.removeMonitor(monitor)
             clickMonitor = nil
         }
+    }
+}
+
+// MARK: - Menu bar appearance
+
+extension AppDelegate {
+    private func wireStatusItemAppearance() {
+        let settings = SettingsService.shared
+        let monitor = SystemMonitorService.shared
+        monitor.setMenuBarTempEnabled(settings.menuBarDisplayMode != .iconOnly)
+        updateStatusItemAppearance(currentStatusRenderState(), forceRelayout: true)
+
+        settings.$menuBarDisplayMode
+            .dropFirst()
+            .sink { mode in
+                SystemMonitorService.shared.setMenuBarTempEnabled(mode != .iconOnly)
+            }
+            .store(in: &statusItemCancellables)
+
+        let styleChanges = Publishers.MergeMany(
+            settings.$menuBarDisplayMode.map { _ in () }.eraseToAnyPublisher(),
+            settings.$menuBarTemperatureStyle.map { _ in () }.eraseToAnyPublisher(),
+            settings.$menuBarThermalColor.map { _ in () }.eraseToAnyPublisher(),
+            settings.$menuBarCustomSymbol.map { _ in () }.eraseToAnyPublisher(),
+            settings.$temperatureUnit.map { _ in () }.eraseToAnyPublisher(),
+            settings.$showTemperatureDecimal.map { _ in () }.eraseToAnyPublisher(),
+            monitor.$cpuTemperatureC.map { _ in () }.eraseToAnyPublisher()
+        )
+        styleChanges
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                guard let self else { return }
+                self.updateStatusItemAppearance(self.currentStatusRenderState(), forceRelayout: false)
+            }
+            .store(in: &statusItemCancellables)
+    }
+
+    private func currentStatusRenderState() -> StatusItemRenderState {
+        let settings = SettingsService.shared
+        let celsius = SystemMonitorService.shared.cpuTemperatureC
+        let zone: ThermalColorZone = settings.menuBarThermalColor
+            ? ThermalColorZone.from(celsius: celsius)
+            : .normal
+        return StatusItemRenderState(
+            mode: settings.menuBarDisplayMode,
+            tempStyle: settings.menuBarTemperatureStyle,
+            symbol: settings.menuBarCustomSymbol,
+            unit: settings.temperatureUnit,
+            showDecimal: settings.showTemperatureDecimal,
+            thermalZone: zone,
+            tempText: TemperatureFormatter.format(
+                celsius: celsius,
+                unit: settings.temperatureUnit,
+                showDecimal: settings.showTemperatureDecimal
+            )
+        )
+    }
+
+    private func updateStatusItemAppearance(_ state: StatusItemRenderState, forceRelayout: Bool) {
+        guard let item = statusItem, let button = item.button else { return }
+        let normalized = StatusItemRenderState(
+            mode: state.mode,
+            tempStyle: state.mode == .cpuTemperature ? state.tempStyle : .compact,
+            symbol: state.mode == .cpuTemperature ? "" : state.symbol,
+            unit: state.unit,
+            showDecimal: state.showDecimal,
+            thermalZone: state.mode == .iconOnly ? .normal : state.thermalZone,
+            tempText: state.mode == .iconOnly ? "" : state.tempText
+        )
+        guard forceRelayout || normalized != lastStatusRender else { return }
+        lastStatusRender = normalized
+
+        let layoutKey = StatusItemLayoutKey.from(normalized)
+        let targetLength = layoutKey.reservedLength
+        let modeChanged = forceRelayout || lastStatusLayoutKey?.mode != normalized.mode
+        let lengthChanged = forceRelayout || lastStatusItemLength != targetLength
+        let symbolChanged = forceRelayout || lastStatusLayoutKey?.symbol != normalized.symbol
+        let styleChanged = forceRelayout || lastStatusLayoutKey?.tempStyle != normalized.tempStyle
+        lastStatusLayoutKey = layoutKey
+
+        // Fast path: temperature text/color/style changed without altering mode or reserved width.
+        if !modeChanged, !lengthChanged, normalized.mode != .iconOnly, let metricView = statusBarMetricView {
+            if symbolChanged || styleChanged {
+                let showIcon = normalized.mode == .iconAndTemperature
+                let symbolImage = showIcon ? statusBarSymbolImage(named: normalized.symbol) : nil
+                metricView.configureLayout(style: normalized.tempStyle, showIcon: showIcon, image: symbolImage)
+            }
+            metricView.updateContent(text: normalized.tempText, thermalZone: normalized.thermalZone)
+            button.setAccessibilityTitle("Crisper \(normalized.tempText)")
+            return
+        }
+
+        applyStatusItemLayout(
+            normalized,
+            item: item,
+            button: button,
+            targetLength: targetLength,
+            shouldResetHighlight: modeChanged || lengthChanged
+        )
+    }
+
+    private func applyStatusItemLayout(
+        _ normalized: StatusItemRenderState,
+        item: NSStatusItem,
+        button: NSStatusBarButton,
+        targetLength: CGFloat,
+        shouldResetHighlight: Bool
+    ) {
+        lastStatusItemLength = targetLength
+        if shouldResetHighlight {
+            StatusItemHighlight.resetLayoutState()
+        }
+
+        switch normalized.mode {
+        case .cpuTemperature, .iconAndTemperature:
+            let metricView = ensureStatusBarMetricView(on: button)
+            let showIcon = normalized.mode == .iconAndTemperature
+            let symbolImage = showIcon ? statusBarSymbolImage(named: normalized.symbol) : nil
+            button.image = nil
+            button.imagePosition = .noImage
+            button.title = ""
+            button.attributedTitle = NSAttributedString()
+            metricView.isHidden = false
+            metricView.configureLayout(style: normalized.tempStyle, showIcon: showIcon, image: symbolImage)
+            metricView.updateContent(text: normalized.tempText, thermalZone: normalized.thermalZone)
+            button.setAccessibilityTitle("Crisper \(normalized.tempText)")
+            item.length = targetLength
+        case .iconOnly:
+            statusBarMetricView?.isHidden = true
+            button.title = ""
+            button.attributedTitle = NSAttributedString()
+            button.image = statusBarSymbolImage(named: normalized.symbol)
+            button.imagePosition = .imageOnly
+            button.setAccessibilityTitle("Crisper")
+            item.length = targetLength
+            button.invalidateIntrinsicContentSize()
+        }
+
+        let baseLength: CGFloat? = targetLength > 0 ? targetLength : nil
+        DispatchQueue.main.async { [weak item] in
+            StatusItemHighlight.makeRoom(for: item?.button, baseLength: baseLength)
+        }
+    }
+
+    private func ensureStatusBarMetricView(on button: NSStatusBarButton) -> StatusBarMetricView {
+        if let existing = statusBarMetricView {
+            if existing.superview !== button {
+                button.addSubview(existing)
+                pinMetricView(existing, to: button)
+            }
+            return existing
+        }
+        let view = StatusBarMetricView(frame: button.bounds)
+        button.addSubview(view)
+        pinMetricView(view, to: button)
+        statusBarMetricView = view
+        return view
+    }
+
+    private func pinMetricView(_ view: StatusBarMetricView, to button: NSStatusBarButton) {
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+            view.topAnchor.constraint(equalTo: button.topAnchor),
+            view.bottomAnchor.constraint(equalTo: button.bottomAnchor)
+        ])
+    }
+
+    private func statusBarSymbolImage(named name: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "Crisper")
+            ?? NSImage(systemSymbolName: MenuBarSymbolCatalog.defaultSymbol, accessibilityDescription: "Crisper")
+        image?.isTemplate = true
+        return image
     }
 }
 

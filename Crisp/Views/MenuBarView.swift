@@ -1,5 +1,5 @@
 import SwiftUI
-import ApplicationServices
+import AppKit
 
 // MARK: - Shared Icon Helper
 
@@ -279,6 +279,7 @@ struct UpdateRow: View {
     let version: String
     let action: () -> Void
     @State private var isHovered = false
+    @State private var cursorPushed = false
 
     var body: some View {
         HStack {
@@ -299,11 +300,28 @@ struct UpdateRow: View {
         }
         .onHover { hovering in
             isHovered = hovering
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            setPointingCursor(hovering)
+        }
+        .onDisappear {
+            setPointingCursor(false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidClose)) { _ in
+            isHovered = false
+            setPointingCursor(false)
         }
         .accessibilityLabel("Update available, version \(version)")
         .accessibilityHint("Click to open the release page")
         .accessibilityAddTraits(.isButton)
+    }
+
+    private func setPointingCursor(_ active: Bool) {
+        guard active != cursorPushed else { return }
+        cursorPushed = active
+        if active {
+            NSCursor.pointingHand.push()
+        } else {
+            NSCursor.pop()
+        }
     }
 }
 
@@ -336,221 +354,6 @@ struct SettingSwitchRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 3)
-        }
-    }
-}
-
-// MARK: - SupportRow
-
-/// Optional "buy me a coffee" link at the bottom of Settings, styled as a normal
-/// menu row so it's as findable as the update row. Never a popup or launch-time nag.
-struct SupportRow: View {
-    // Owned by the parent (SettingsView) so its panel-close handler can collapse it,
-    // like every other submenu.
-    @Binding var expanded: Bool
-
-    // Shared with Advanced Settings > About.
-    static let kofi = "https://ko-fi.com/didriksg"
-    static let afdian = "https://ifdian.net/a/didriksg"
-    static let github = "https://github.com/sponsors/didriksg"
-
-    /// Payment region can't be detected reliably in a sideloaded app, so the submenu
-    /// lists every link and this only orders them: mainland China needs Afdian's
-    /// WeChat/Alipay over the Stripe-based Ko-fi/GitHub checkouts.
-    static var prefersChinese: Bool {
-        Locale.current.region?.identifier == "CN"
-            || Bundle.main.preferredLocalizations.first?.hasPrefix("zh-Hans") == true
-    }
-
-    /// Drop the "(Afdian)" romanization when the UI itself is Chinese (keyed on UI
-    /// language, not region).
-    static var afdianTitle: String {
-        Bundle.main.preferredLocalizations.first?.hasPrefix("zh") == true
-            ? "爱发电" : "爱发电 (Afdian)"
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ExpandableRow(
-                icon: "heart.fill",
-                iconColor: .pink,
-                label: "Support Crisper",
-                isExpanded: $expanded
-            )
-
-            // Always laid out so the curtain glides the links open with the panel spring
-            // instead of popping to full height.
-            VStack(spacing: 0) {
-                if Self.prefersChinese {
-                    SupportLinkRow(title: Self.afdianTitle, url: Self.afdian)
-                    SupportLinkRow(title: "Ko-fi", url: Self.kofi)
-                    SupportLinkRow(title: "GitHub Sponsors", url: Self.github)
-                } else {
-                    SupportLinkRow(title: "Ko-fi", url: Self.kofi)
-                    SupportLinkRow(title: "GitHub Sponsors", url: Self.github)
-                    SupportLinkRow(title: Self.afdianTitle, url: Self.afdian)
-                }
-            }
-            .padding(.leading, 8)
-            .curtainReveal(expanded)
-        }
-    }
-}
-
-/// The last Settings row: opens the Advanced Settings window, which holds what Crisp
-/// works without (docs/DESIGN.md). An action, not a disclosure, so no chevron.
-private struct AdvancedSettingsRow: View {
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            MenuItemIcon(systemName: "slider.horizontal.3", active: false)
-                .accessibilityHidden(true)
-            Text("Advanced Settings…")
-                .font(.body)
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 3)
-        .menuRowHover(isHovered)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard PanelOpenGuard.allowsActivation else { return }
-            action()
-        }
-        .onHover { isHovered = $0 }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-    }
-}
-
-/// One external-link row inside the Support submenu: a label with the ↗ affordance
-/// that opens the platform's page in the browser. Brand names are verbatim so they
-/// are never localized or number-grouped.
-private struct SupportLinkRow: View {
-    let title: String
-    let url: String
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack {
-            Text(verbatim: title)
-                .font(.body)
-            Spacer()
-            Image(systemName: "arrow.up.forward")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 3)
-        .menuRowHover(isHovered)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard let link = URL(string: url) else { return }
-            NSWorkspace.shared.open(link)
-        }
-        .onHover { hovering in
-            isHovered = hovering
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
-        .accessibilityLabel(Text(verbatim: title))
-        .accessibilityAddTraits(.isButton)
-    }
-}
-
-// MARK: - SettingsView
-
-struct SettingsView: View {
-    @ObservedObject private var settings = SettingsService.shared
-    // AXIsProcessTrusted() isn't observable, so re-read it on every open (below) or the
-    // section shows stale state after the user grants/revokes in System Settings. (vx44)
-    @State private var isTrusted = AXIsProcessTrusted()
-    /// Closes the panel and opens the Advanced Settings window (AppDelegate).
-    let openAdvancedSettings: () -> Void
-
-    /// Opt-in control for brightness-key redirection, shown only while Accessibility is
-    /// missing: the in-context trigger for the native trust prompt (nothing is requested
-    /// at launch). On grant the parent hides it. (b00d.1, jv1b)
-    private struct BrightnessKeysPermissionNotice: View {
-        // ponytail: local intent so the switch animates on tap; harmless if denied.
-        @State private var requesting = false
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle(isOn: Binding(
-                    get: { requesting },
-                    set: { on in
-                        requesting = on
-                        if on {
-                            BrightnessKeyService.requestAccess()
-                        } else {
-                            BrightnessKeyService.shared.stop()
-                        }
-                    }
-                )) {
-                    HStack(spacing: 8) {
-                        MenuItemIcon(systemName: "keyboard", color: .accentColor, active: requesting)
-                            .accessibilityHidden(true)
-                        Text("Use brightness keys on external displays")
-                            .font(.body)
-                        Spacer()
-                    }
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-
-                // swiftlint:disable:next line_length - localized literal, splitting would change its catalog key
-                Text("Brightness keys need Accessibility access to redirect them to external displays. Grant it once and they start working, no restart.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                // Returning from System Settings without granting: un-stick the toggle.
-                if !AXIsProcessTrusted() { requesting = false }
-            }
-        }
-    }
-
-    var body: some View {
-        // spacing 0: each row carries its own .vertical padding. Dividers/headers pad themselves.
-        VStack(alignment: .leading, spacing: 0) {
-            // Behavior preference, not a display feature, so it sits outside the Tools
-            // group and stays shown with no external connected (can be armed before docking).
-            AutoBrightnessView()
-
-            // Asks for Accessibility while it is missing: without it the brightness keys only
-            // reach the built-in, so the ask stays where everyone sees it. Which displays the
-            // keys adjust, once granted, is set in Advanced Settings > Keyboard.
-            if !isTrusted {
-                BrightnessKeysPermissionNotice()
-            }
-
-            AdvancedSettingsRow(action: openAdvancedSettings)
-
-            SectionDivider()
-
-            Text("Crisper v\(UpdateService.shared.currentVersion)")
-                .font(.caption)
-                .foregroundColor(.secondaryReadable)
-                .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 6)
-        .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidOpen)) { _ in
-            isTrusted = AXIsProcessTrusted()  // vx44, see isTrusted's declaration above
-            // Re-arm whenever trust is effective, not only at launch: after an upgrade the
-            // launch-time check can read false while macOS re-validates the bundle. start() is idempotent.
-            if isTrusted { BrightnessKeyService.shared.start() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Also refresh on reactivate, so the notice goes away after a grant without
-            // closing and reopening the panel.
-            isTrusted = AXIsProcessTrusted()
-            if isTrusted { BrightnessKeyService.shared.start() }
         }
     }
 }

@@ -23,10 +23,13 @@ Available in English, 简体中文, and 繁體中文.
 
 ## Highlights
 
+- **Real-Time Hardware Monitor (2×2 Dashboard)**: Low-overhead live cards for **CPU** (model, temperature, User/System/Idle stacked chart), **GPU** (model, core count, Device/Render/Tiler stacked chart), **Disk** (remaining/total space, SSD temperature, live R/W throughput, expandable multi-volume `Detail>`), and **RAM** (usage bar + one-click `Free Up`). Uses adaptive polling (0 Hz when closed in icon-only mode; <0.1 ms cached SMC reads when displaying menu bar temperature).
+- **Quick Utility Bar**: Instant one-click toggles for **Dark Mode**, **Power Saving Mode**, **Clean Keyboard** (event-tap keyboard lock with floating unlock HUD & `Cmd+Option+Esc` failsafe), and **Clean Screen** (multi-monitor blackout shield with double-click / `Esc`-hold unlock).
+- **Customizable Menu Bar Icon & Live CPU Temperature**: Display live CPU temperature in Apple's official macOS menu bar font (SF Pro) with tight native spacing across **Stacked (`CPU`)**, **Vertical Tag**, **Compact**, **Icon + Temperature**, or **Custom SF Symbol** modes, plus `°C`/`°F`, decimal precision, and optional thermal color tinting—rendered via direct CoreText for consistent weight across light/dark Spaces and zero flicker.
+- **Unified Standalone Settings**: Clean bottom-right Settings button in the menu bar panel footer opening a native multi-tab Settings window (`General`, `Menu Bar`, `Keyboard`, `Displays`, `Smart Dummy`, `About`).
 - **Smart Dummy (Event-Driven `CGVirtualDisplay`)**: Automatically creates a virtual HiDPI display when no physical external display is active, and **Auto-Yields** (tears down) the moment a real display connects. Includes a **clamshell stay-awake guard** and **AC-only auto-suspend/restore** so headless remote sessions stay crisp without draining battery.
 - **AC-Aware Keep Awake**: Choose between **Always Awake** and **On AC Power** modes. Coordinates with Smart Dummy so remote-control power cutoffs or unplugging AC cleanly suspend both Keep Awake and the virtual display, then restore them when power returns.
-- **Streamlined Menu Bar**: Focused, clutter-free menu bar panel with quick access to display controls, Smart Dummy status, and Keep Awake mode.
-- **External Monitor Controls**: Sharp HiDPI scaling (including smooth scaling), real hardware brightness and speaker volume over DDC, software dimming, Extra Brightness (HDR headroom), soft-disconnect/reconnect, DDC input switching, and ICC profiles & color adjustments.
+- **External Monitor Controls**: Sharp HiDPI scaling (including smooth scaling), real hardware brightness and speaker volume over DDC (with write deduplication), software dimming, Extra Brightness (HDR headroom), soft-disconnect/reconnect, DDC input switching, and ICC profiles & color adjustments.
 - **Automation (`crisperctl` & Shortcuts)**: CLI control via `crisperctl` (including virtual display, brightness, HDR, input switching, and display toggling) alongside native macOS Shortcuts actions.
 
 ## Smart Dummy + Keep Awake (On AC Power) State Matrix
@@ -67,8 +70,10 @@ See [docs/BUILDING.md](docs/BUILDING.md) for standalone `swiftc` builds, `crispe
 
 ## Permissions
 
-- **Administrator password** (one-time, per monitor): Needed only when enabling smooth scaling, which writes a display override file into `/Library/Displays/Contents/Resources/Overrides`. Regular HiDPI scaling and all other features are password-free.
-- **Accessibility** (System Settings > Privacy & Security > Accessibility): Needed only if you enable Brightness Keys to route keyboard brightness keys to external displays.
+- **Administrator password (one-time, optional)**:
+  - **Smooth Scaling**: Writes a display override plist into `/Library/Displays/Contents/Resources/Overrides` (once per monitor).
+  - **Power Saving Mode & RAM Free Up**: Installs a narrowly scoped, `visudo`-validated, current-UID-only rule in `/etc/sudoers.d/crisper-power` allowing strictly `pmset lowpowermode` and `purge` without repeated prompts. Removable in one click from **Settings > Menu Bar**.
+- **Accessibility** (System Settings > Privacy & Security > Accessibility): Needed only for **Brightness Keys** redirection and **Clean Keyboard** / keyboard-locking during **Clean Screen**.
 
 ## `crisperctl` Quick Examples
 

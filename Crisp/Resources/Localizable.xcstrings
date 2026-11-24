@@ -69,6 +69,22 @@
         }
       }
     },
+    "%@ free / %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %1$@ / %2$@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩餘 %1$@ / %2$@"
+          }
+        }
+      }
+    },
     "%@ off" : {
       "localizations" : {
         "zh-Hans" : {
@@ -331,6 +347,38 @@
         }
       }
     },
+    "Accessibility permission is required to lock the keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "锁定键盘需要辅助功能权限。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鎖定鍵盤需要輔助使用權限。"
+          }
+        }
+      }
+    },
+    "Accessibility permission was revoked; keyboard unlocked." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "辅助功能权限已被撤销，键盘已解锁。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "輔助使用權限已被撤銷，鍵盤已解鎖。"
+          }
+        }
+      }
+    },
     "Acknowledgments" : {
       "localizations" : {
         "zh-Hans" : {
@@ -455,6 +503,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "調整可能影響 HDR 內容！"
+          }
+        }
+      }
+    },
+    "Administrator authorization failed: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理员授权失败：%@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理員授權失敗：%@"
+          }
+        }
+      }
+    },
+    "Administrator authorization was canceled." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已取消管理员授权。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已取消管理員授權。"
           }
         }
       }
@@ -702,6 +782,54 @@
         }
       }
     },
+    "Authorization succeeded, but the helper rule was not found." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权成功，但未找到辅助工具规则。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授權成功，但找不到輔助工具規則。"
+          }
+        }
+      }
+    },
+    "Authorize Once…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权一次…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授權一次…"
+          }
+        }
+      }
+    },
+    "Authorized — Power Saving Mode and Free Up run without repeated password prompts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已授权 — 省电模式与释放内存将不再重复询问密码。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已授權 — 低耗電模式與釋放記憶體將不再重複詢問密碼。"
+          }
+        }
+      }
+    },
     "Auto" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -763,6 +891,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自動"
+          }
+        }
+      }
+    },
+    "Automatically adapts display color temperature to ambient lighting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根据环境光自动调整显示器色温"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根據環境光自動調整顯示器色溫"
           }
         }
       }
@@ -860,6 +1004,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "測試版"
+          }
+        }
+      }
+    },
+    "Blocked unauthorized privileged command." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拦截未授权的特权命令。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已攔截未授權的特權命令。"
+          }
+        }
+      }
+    },
+    "Bolt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "闪电"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "閃電"
           }
         }
       }
@@ -1026,6 +1202,38 @@
         }
       }
     },
+    "CPU" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU"
+          }
+        }
+      }
+    },
+    "CPU Temperature" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU 温度"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU 溫度"
+          }
+        }
+      }
+    },
     "Cancel" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1151,6 +1359,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "闔蓋防休眠保護"
+          }
+        }
+      }
+    },
+    "Clean Keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清洁键盘"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清潔鍵盤"
+          }
+        }
+      }
+    },
+    "Clean Screen" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清洁屏幕"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清潔螢幕"
+          }
+        }
+      }
+    },
+    "Clean Screen could not capture focus. Grant Accessibility access or close any password prompt." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清洁屏幕无法获取焦点。请授予辅助功能权限或关闭当前密码提示框。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清潔螢幕無法取得焦點。請授予輔助使用權限或關閉目前的密碼提示框。"
           }
         }
       }
@@ -1556,6 +1812,22 @@
         }
       }
     },
+    "Could not lock the keyboard. Re-enable Accessibility permission for Crisper." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法锁定键盘。请为 Crisper 重新启用辅助功能权限。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法鎖定鍵盤。請為 Crisper 重新啟用輔助使用權限。"
+          }
+        }
+      }
+    },
     "Create" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1770,6 +2042,22 @@
     "Crisp v%@" : {
       "shouldTranslate" : false
     },
+    "Crisper" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crisper"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crisper"
+          }
+        }
+      }
+    },
     "Crisper v%@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1830,6 +2118,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "目前使用中"
+          }
+        }
+      }
+    },
+    "Custom Icon" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义图标"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自訂圖示"
           }
         }
       }
@@ -1915,6 +2219,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "刪除"
+          }
+        }
+      }
+    },
+    "Desktop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "桌面电脑"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "桌上型電腦"
+          }
+        }
+      }
+    },
+    "Detail" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "详情"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "詳細資訊"
+          }
+        }
+      }
+    },
+    "Device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "裝置"
           }
         }
       }
@@ -2066,6 +2418,22 @@
         }
       }
     },
+    "Display Style" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示样式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顯示樣式"
+          }
+        }
+      }
+    },
     "Display brightness" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2130,6 +2498,22 @@
         }
       }
     },
+    "Display tenths of a degree (e.g. 49.8°C vs 50°C)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示小数点后一位（例如 49.8°C 而非 50°C）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顯示小數點後一位（例如 49.8°C 而非 50°C）"
+          }
+        }
+      }
+    },
     "Display: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2158,6 +2542,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "顯示器"
+          }
+        }
+      }
+    },
+    "Displays live CPU, GPU, disk, and memory cards in the menu bar panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在菜单栏面板中显示实时 CPU、GPU、磁盘和内存监控卡片"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在選單列面板中顯示即時 CPU、GPU、磁碟與記憶體監控卡片"
           }
         }
       }
@@ -2239,6 +2639,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "macOS 藏起來的顯示器控制，都裝進這一個選單列面板。"
+          }
+        }
+      }
+    },
+    "Exit status %d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出状态 %d"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "結束狀態 %d"
+          }
+        }
+      }
+    },
+    "External" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外置"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外接"
           }
         }
       }
@@ -2340,6 +2772,22 @@
         }
       }
     },
+    "Failed to construct AppleScript." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法创建 AppleScript。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法建立 AppleScript。"
+          }
+        }
+      }
+    },
     "Failed to create virtual display. Please try again." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2416,6 +2864,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "跟隨指標"
+          }
+        }
+      }
+    },
+    "Free Up" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "释放"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "釋放"
           }
         }
       }
@@ -2613,6 +3077,22 @@
         }
       }
     },
+    "Gauge" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仪表盘"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "儀表板"
+          }
+        }
+      }
+    },
     "General" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2725,6 +3205,22 @@
         }
       }
     },
+    "Helper authorization file was not installed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未安装辅助授权文件。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未安裝輔助授權檔案。"
+          }
+        }
+      }
+    },
     "HiDPI" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2773,6 +3269,38 @@
         }
       }
     },
+    "Hold Esc (1.5s) or double-click to exit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "长按 Esc 1.5 秒或双击退出"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "長按 Esc 1.5 秒或按兩下退出"
+          }
+        }
+      }
+    },
+    "Hold ⌘⌥Esc for 1.5s or click Unlock" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "长按 ⌘⌥Esc 1.5 秒或点按解锁"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "長按 ⌘⌥Esc 1.5 秒或按一下解鎖"
+          }
+        }
+      }
+    },
     "Icon" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2789,6 +3317,22 @@
         }
       }
     },
+    "Icon & CPU Temperature" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图标与 CPU 温度"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圖示與 CPU 溫度"
+          }
+        }
+      }
+    },
     "Icon & color" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2801,6 +3345,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "圖像與顏色"
+          }
+        }
+      }
+    },
+    "Icon Symbol" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图标样式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圖示樣式"
+          }
+        }
+      }
+    },
+    "Idle" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空闲"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "閒置"
           }
         }
       }
@@ -2866,6 +3442,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "輸入來源 %@"
+          }
+        }
+      }
+    },
+    "Internal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "內建"
           }
         }
       }
@@ -2982,6 +3574,22 @@
         }
       }
     },
+    "Keyboard Locked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘已锁定"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鍵盤已鎖定"
+          }
+        }
+      }
+    },
     "Keyboard Shortcuts" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2995,6 +3603,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "鍵盤快速鍵"
+          }
+        }
+      }
+    },
+    "Keyboard lock ended automatically after the event tap timed out." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "事件监听超时，键盘锁定已自动结束。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "事件監聽逾時，鍵盤鎖定已自動結束。"
           }
         }
       }
@@ -3159,6 +3783,22 @@
         }
       }
     },
+    "MacBook" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MacBook"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MacBook"
+          }
+        }
+      }
+    },
     "Main" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3252,6 +3892,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "選單列"
+          }
+        }
+      }
+    },
+    "Menu Bar Extras" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "菜单栏扩展"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "選單列附加項目"
+          }
+        }
+      }
+    },
+    "Menu Bar Icon" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "菜单栏图标"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "選單列圖示"
+          }
+        }
+      }
+    },
+    "Menu Bar Refresh Interval" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "菜单栏刷新间隔"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "選單列重新整理間隔"
           }
         }
       }
@@ -3404,23 +4092,6 @@
         }
       }
     },
-    "Night Shift" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "夜览"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "夜覽"
-          }
-        }
-      }
-    },
     "No built-in display detected" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3453,6 +4124,38 @@
         }
       }
     },
+    "No displays available for Clean Screen." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可用于清洁屏幕的显示器。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "沒有可用於清潔螢幕的顯示器。"
+          }
+        }
+      }
+    },
+    "No mounted volumes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无已装载卷宗"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無已掛載卷宗"
+          }
+        }
+      }
+    },
     "No virtual displays yet" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3481,6 +4184,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "非 HiDPI"
+          }
+        }
+      }
+    },
+    "Not authorized — authorize once to toggle Power Saving Mode and purge memory without prompts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未授权 — 授权一次即可免密码切换省电模式与释放内存。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未授權 — 授權一次即可免密碼切換低耗電模式與釋放記憶體。"
           }
         }
       }
@@ -3631,6 +4350,22 @@
         }
       }
     },
+    "One-time administrator authorization is required." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要一次性管理员授权。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要一次性管理員授權。"
+          }
+        }
+      }
+    },
     "Open" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3643,6 +4378,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已開啟"
+          }
+        }
+      }
+    },
+    "Open Storage Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开储存空间设置"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開儲存空間設定"
           }
         }
       }
@@ -3676,6 +4427,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打開可以請我喝咖啡的頁面"
+          }
+        }
+      }
+    },
+    "Panel Refresh Interval" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "面板刷新间隔"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "面板重新整理間隔"
           }
         }
       }
@@ -3826,6 +4593,38 @@
         }
       }
     },
+    "Power Saving" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "省电模式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "低耗電模式"
+          }
+        }
+      }
+    },
+    "Power Saving Mode & RAM Free Up" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "省电模式与内存释放"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "低耗電模式與記憶體釋放"
+          }
+        }
+      }
+    },
     "Preset" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3920,6 +4719,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "接通電源時拔掉外接顯示器，防止闔蓋休眠與鎖屏。"
+          }
+        }
+      }
+    },
+    "Preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "預覽"
+          }
+        }
+      }
+    },
+    "Privileged Utilities" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "特权工具"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "特權工具"
+          }
+        }
+      }
+    },
+    "Privileged command failed with exit status %d." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "特权命令执行失败（退出状态 %d）。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "特權命令執行失敗（結束狀態 %d）。"
           }
         }
       }
@@ -4167,6 +5014,22 @@
         }
       }
     },
+    "Remove Authorization" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除授权"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除授權"
+          }
+        }
+      }
+    },
     "Remove Shortcut" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4179,6 +5042,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "移除快速鍵"
+          }
+        }
+      }
+    },
+    "Render" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "渲染"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "算繪"
           }
         }
       }
@@ -4698,6 +5577,38 @@
         }
       }
     },
+    "Show Decimal Place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示小数位"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顯示小數位"
+          }
+        }
+      }
+    },
+    "Show Hardware Monitor in Panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在面板中显示硬件监控"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在面板中顯示硬體監控"
+          }
+        }
+      }
+    },
     "Show Volume Sliders" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4970,6 +5881,22 @@
         }
       }
     },
+    "Storage Volumes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "储存卷宗"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "儲存卷宗"
+          }
+        }
+      }
+    },
     "Support Crisp" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -5116,6 +6043,22 @@
         }
       }
     },
+    "System Monitor" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统监控"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系統監控"
+          }
+        }
+      }
+    },
     "Takes a display out of the layout, the same as Disconnect Display in the menu." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5128,6 +6071,118 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "將顯示器移出排列，與選單中的「中斷顯示器連線」相同。"
+          }
+        }
+      }
+    },
+    "Compact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "极简单行"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "極簡單行"
+          }
+        }
+      }
+    },
+    "Stacked (CPU)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "双行叠层（CPU）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "雙行疊層（CPU）"
+          }
+        }
+      }
+    },
+    "Temperature Layout" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "温度样式"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "溫度樣式"
+          }
+        }
+      }
+    },
+    "Thermal Color Tint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高温自动变色"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高溫自動變色"
+          }
+        }
+      }
+    },
+    "Tint the temperature amber above 70°C and red above 85°C" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "温度超过 70°C 显示橙色，超过 85°C 显示红色"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "溫度超過 70°C 顯示橘色，超過 85°C 顯示紅色"
+          }
+        }
+      }
+    },
+    "Vertical Tag" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "竖排标签（CPU）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直排標籤（CPU）"
+          }
+        }
+      }
+    },
+    "Temperature Unit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "温度单位"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "溫度單位"
           }
         }
       }
@@ -5180,6 +6235,22 @@
         }
       }
     },
+    "Thermometer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "温度计"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "溫度計"
+          }
+        }
+      }
+    },
     "This is the only display, so it stays connected while it shows the other input." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5208,6 +6279,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此虛擬顯示器目前正在使用中。刪除它會立即停用。"
+          }
+        }
+      }
+    },
+    "Tiler" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分块"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分塊"
           }
         }
       }
@@ -5391,6 +6478,54 @@
         }
       }
     },
+    "Unknown error" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知错误"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知錯誤"
+          }
+        }
+      }
+    },
+    "Unlock" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解锁"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解鎖"
+          }
+        }
+      }
+    },
+    "Unlock Keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解锁键盘"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解鎖鍵盤"
+          }
+        }
+      }
+    },
     "Until %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5499,6 +6634,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "用亮度鍵控制外接顯示器"
+          }
+        }
+      }
+    },
+    "User" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用户"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用者"
           }
         }
       }

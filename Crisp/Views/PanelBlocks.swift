@@ -5,12 +5,17 @@ import AppKit
 // once at its natural size, and AppKit animates the clips and window instead
 // of SwiftUI. See docs/panel-resize.md for the full architecture.
 
+/// Shared horizontal layout metrics for the menu bar panel and its blocks.
+enum PanelLayout {
+    static let width: CGFloat = 348
+}
+
 /// Section open/close state, lifted out of the view tree so both the SwiftUI
 /// headers (chevrons, bindings) and the AppKit canvas (clip targets) share it.
 @MainActor
 final class PanelSectionState: ObservableObject {
     @Published var showKeepAwakeModes = false
-    @Published var showSettings = false
+    @Published var showDiskDetail = false
     @Published var expandedDisplayIDs: Set<CGDirectDisplayID> = []
     // Per-display dropdown sections, lifted out of view @State so each reveal
     // is its own canvas block (docs/panel-resize.md).
@@ -25,7 +30,7 @@ final class PanelSectionState: ObservableObject {
     /// Collapse every section so the panel reopens fresh; called once hidden.
     func collapseAll() {
         showKeepAwakeModes = false
-        showSettings = false
+        showDiskDetail = false
         expandedDisplayIDs.removeAll()
         resolutionOpenIDs.removeAll()
         allResolutionsOpenIDs.removeAll()
@@ -71,7 +76,7 @@ struct BlockHost<Content: View>: View {
     var body: some View {
         // Report natural height; the canvas springs the clip to it.
         content
-            .frame(width: 308)
+            .frame(width: PanelLayout.width)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0) }
             // Top-glue: pin to .top so NSHostingView doesn't center a nested
             // curtain's shorter mid-reveal content (that drifts the top row).
@@ -323,28 +328,62 @@ struct UpdateBlockView: View {
     }
 }
 
-/// Fixed footer: divider + Quit, like the Wi-Fi menu's settings footer.
+/// Fixed footer: divider + Quit on the left and Settings button pinned to bottom-right.
 struct PanelFooterBlock: View {
+    let openSettings: () -> Void
     @State private var quitHovered = false
+    @State private var settingsHovered = false
 
     var body: some View {
         VStack(spacing: 0) {
             Divider().opacity(0.25).padding(.horizontal, 12)
-            HStack {
-                Text("Quit Crisper")
-                    .font(.body)
-                Spacer()
+            HStack(spacing: 4) {
+                HStack {
+                    Text("Quit Crisper")
+                        .font(.body)
+                    Spacer()
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(quitHovered ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard PanelOpenGuard.allowsActivation else { return }
+                    NSApplication.shared.terminate(nil)
+                }
+                .onHover { quitHovered = $0 }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+
+                Button {
+                    guard PanelOpenGuard.allowsActivation else { return }
+                    openSettings()
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(settingsHovered ? Color.primary : Color.secondaryReadable)
+                        .frame(width: 28, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.primary.opacity(settingsHovered ? 0.10 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { settingsHovered = $0 }
+                .help("Settings")
+                .accessibilityLabel("Settings")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 3)
-            .menuRowHover(quitHovered)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                NSApplication.shared.terminate(nil)
-            }
-            .onHover { quitHovered = $0 }
+            .padding(.horizontal, 5)
             .padding(.top, 4)
         }
         .padding(.bottom, 8)
+        .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidClose)) { _ in
+            quitHovered = false
+            settingsHovered = false
+        }
     }
 }

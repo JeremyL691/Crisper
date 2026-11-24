@@ -1,50 +1,100 @@
 import SwiftUI
 
-/// Night Shift / True Tone quick toggles (system-level, via CoreBrightnessService).
-/// Circular button + label below, modeled on the Dark Mode / Night Shift / True Tone row in the macOS 26 system displays panel.
+/// Quick-tools bar at the top of the panel: four equal-width circular toggles
+/// for Dark Mode, Power Saving, Clean Keyboard, and Clean Screen.
 struct ScreenEffectsView: View {
+    var onClosePanel: () -> Void = {}
+
     @ObservedObject private var effects = CoreBrightnessService.shared
+    @ObservedObject private var lowPower = LowPowerModeService.shared
+    @ObservedObject private var cleaning = CleaningModeService.shared
+
+    private var activeError: String? {
+        if let err = lowPower.lastError, !err.isEmpty { return err }
+        if let err = cleaning.lastError, !err.isEmpty { return err }
+        return nil
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if effects.darkModeAvailable {
-                EffectCircleButton(
-                    glyph: .darkMode,
-                    label: "Dark Mode",
-                    isOn: effects.darkModeEnabled
+        VStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 2) {
+                QuickToolCircleButton(
+                    symbol: "circle.lefthalf.filled",
+                    label: String(localized: "Dark Mode"),
+                    isOn: effects.darkModeEnabled,
+                    onFill: .white,
+                    onIcon: .black,
+                    disabled: !effects.darkModeAvailable
                 ) {
                     effects.setDarkMode(!effects.darkModeEnabled)
                 }
                 .frame(maxWidth: .infinity)
-            }
-            if effects.nightShiftAvailable {
-                EffectCircleButton(
-                    glyph: .nightShift,
-                    label: "Night Shift",
-                    isOn: effects.nightShiftEnabled,
+
+                QuickToolCircleButton(
+                    symbol: "battery.25percent",
+                    label: String(localized: "Power Saving"),
+                    isOn: lowPower.isEnabled,
                     onFill: .orange,
-                    onIcon: .white
+                    onIcon: .white,
+                    isBusy: lowPower.isTransitioning,
+                    disabled: lowPower.isTransitioning
                 ) {
-                    effects.setNightShift(!effects.nightShiftEnabled)
+                    lowPower.toggle()
                 }
                 .frame(maxWidth: .infinity)
-            }
-            if effects.trueToneAvailable {
-                EffectCircleButton(
-                    glyph: .trueTone,
-                    label: "True Tone",
-                    isOn: effects.trueToneEnabled,
+
+                QuickToolCircleButton(
+                    symbol: "keyboard",
+                    label: String(localized: "Clean Keyboard"),
+                    isOn: cleaning.activeMode == .keyboard,
                     onFill: .blue,
                     onIcon: .white
                 ) {
-                    effects.setTrueTone(!effects.trueToneEnabled)
+                    cleaning.toggleKeyboardCleaning()
+                    if cleaning.activeMode != .none {
+                        onClosePanel()
+                    }
+                }
+                .frame(maxWidth: .infinity)
+
+                QuickToolCircleButton(
+                    symbol: "sparkles.rectangle.stack",
+                    label: String(localized: "Clean Screen"),
+                    isOn: cleaning.activeMode == .screen,
+                    onFill: .indigo,
+                    onIcon: .white
+                ) {
+                    cleaning.toggleScreenCleaning()
+                    if cleaning.activeMode != .none {
+                        onClosePanel()
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
+
+            if let error = activeError {
+                Text(verbatim: error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+            }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.vertical, 8)
-        .onAppear { effects.refresh() }
+        .onAppear {
+            effects.refresh()
+            lowPower.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidOpen)) { _ in
+            effects.refresh()
+            lowPower.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidClose)) { _ in
+            cleaning.lastError = nil
+            lowPower.lastError = nil
+        }
     }
 }
 
@@ -58,25 +108,21 @@ private struct InstantPressStyle: ButtonStyle {
     }
 }
 
-/// Same circular toggle style as the system panel: off is a translucent dark
-/// circle, on is the effect's own tint (white/orange/blue for Dark Mode/Night
-/// Shift/True Tone).
-private struct EffectCircleButton: View {
-    let glyph: EffectGlyph
+/// Circular quick-tool toggle styled like the Control Center display panel:
+/// translucent dark circle when off, tinted circle when on.
+private struct QuickToolCircleButton: View {
+    let symbol: String
     let label: String
     let isOn: Bool
     var onFill: Color = .white
     var onIcon: Color = .black
+    var isBusy = false
+    var disabled = false
     let action: () -> Void
-
-    /// Resolve the label key through NSLocalizedString; Text(String) does not
-    /// auto-localize unlike Text(LocalizedStringKey).
-    private var localizedLabel: String {
-        NSLocalizedString(label, comment: "")
-    }
 
     var body: some View {
         Button {
+            guard PanelOpenGuard.allowsActivation, !disabled else { return }
             action()
         } label: {
             VStack(spacing: 5) {
@@ -84,104 +130,34 @@ private struct EffectCircleButton: View {
                     Circle()
                         .fill(isOn ? AnyShapeStyle(onFill) : AnyShapeStyle(Color.primary.opacity(0.12)))
                         .frame(width: 36, height: 36)
-                    EffectGlyphView(glyph: glyph, color: isOn ? onIcon : .primary.opacity(0.85))
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.85)
+                    } else {
+                        Image(systemName: symbol)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(isOn ? onIcon : Color.primary.opacity(0.85))
+                    }
                 }
                 VStack(spacing: 1) {
-                    Text(localizedLabel)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.primary)
+                    Text(verbatim: label)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
                     Text(isOn ? "On" : "Off")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondaryReadable)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.secondaryReadable)
+                        .lineLimit(1)
                 }
             }
+            .opacity(disabled && !isBusy ? 0.45 : 1)
             .contentShape(Rectangle())
         }
         .buttonStyle(InstantPressStyle())
-        .accessibilityLabel(isOn ? "\(localizedLabel), on" : "\(localizedLabel), off")
+        .accessibilityLabel(isOn ? Text("\(label), on") : Text("\(label), off"))
         .accessibilityAddTraits(.isButton)
-    }
-}
-
-// MARK: - Effect glyphs
-//
-// Dark Mode uses the public SF Symbol `circle.lefthalf.filled`. Night Shift and True
-// Tone have no public symbol, so they are hand-drawn (sun-with-moon, sun-with-stripes)
-// as original vector shapes rather than reproductions of Apple's private glyphs.
-
-enum EffectGlyph { case darkMode, nightShift, trueTone }
-
-private struct EffectGlyphView: View {
-    let glyph: EffectGlyph
-    let color: Color
-
-    var body: some View {
-        switch glyph {
-        case .darkMode:
-            Image(systemName: "circle.lefthalf.filled")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(color)
-        case .nightShift:
-            ZStack { SunRaysGlyph(color: color); CrescentGlyph(color: color) }
-                .frame(width: 18, height: 18)
-        case .trueTone:
-            ZStack { SunRaysGlyph(color: color); StripedDiscGlyph(color: color) }
-                .frame(width: 18, height: 18)
-        }
-    }
-}
-
-/// Eight short rounded rays around the center, the shared base of the Night Shift
-/// and True Tone glyphs.
-private struct SunRaysGlyph: View {
-    let color: Color
-    var body: some View {
-        ZStack {
-            ForEach(0..<8, id: \.self) { i in
-                Capsule(style: .continuous)
-                    .fill(color)
-                    .frame(width: 1.6, height: 3)
-                    .offset(y: -6.9)
-                    .rotationEffect(.degrees(Double(i) * 45))
-            }
-        }
-        .frame(width: 18, height: 18)
-    }
-}
-
-/// Crescent moon (a disc with an offset disc erased), the Night Shift center.
-private struct CrescentGlyph: View {
-    let color: Color
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7.5, height: 7.5)
-            .overlay(
-                Circle()
-                    .fill(color)
-                    .frame(width: 6.5, height: 6.5)
-                    .offset(x: 2.3, y: -0.7)
-                    .blendMode(.destinationOut)
-            )
-            .compositingGroup()
-    }
-}
-
-/// Disc crossed by horizontal gaps (a striped circle), the True Tone center.
-private struct StripedDiscGlyph: View {
-    let color: Color
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7.5, height: 7.5)
-            .overlay(
-                VStack(spacing: 0.9) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Rectangle().fill(color).frame(width: 7.5, height: 0.8)
-                    }
-                }
-                .blendMode(.destinationOut)
-            )
-            .compositingGroup()
     }
 }
