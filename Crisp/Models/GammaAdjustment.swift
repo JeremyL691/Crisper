@@ -21,9 +21,12 @@ struct GammaAdjustment: Codable, Equatable {
     /// Quantizes a clamped sample within the channel's rendered output range.
     func quantized(_ value: Double, lower: Double, upper: Double) -> Double {
         guard quantizationLevels < 256, upper > lower else { return value }
+        // Interpolation can round a channel endpoint just outside its range.
+        if value <= lower { return lower }
         let levels = Double(max(2, quantizationLevels))
         let span = upper - lower
-        let bucket = min(levels - 1, floor((value - lower) / span * levels))
+        let bucket = floor((value - lower) / span * levels)
+        if bucket >= levels - 1 { return upper }
         return lower + bucket / (levels - 1) * span
     }
 

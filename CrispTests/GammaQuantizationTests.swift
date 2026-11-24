@@ -17,4 +17,12 @@ final class GammaQuantizationTests: XCTestCase {
         XCTAssertEqual(adjustment.quantized(0.5, lower: 0.1, upper: 0.5), 0.5)
         XCTAssertEqual(adjustment.quantized(0.25, lower: 0.25, upper: 0.25), 0.25)
     }
+
+    func testInvertedEndpointRoundingDoesNotCreateAnExtraLevel() {
+        let adjustment = GammaAdjustment(quantizationLevels: 2)
+        let black = 0.1
+        let white = 0.8
+        XCTAssertEqual(adjustment.quantized(black.nextDown, lower: black, upper: white), black)
+        XCTAssertEqual(adjustment.quantized(white.nextUp, lower: black, upper: white), white)
+    }
 }
