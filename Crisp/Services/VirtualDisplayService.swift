@@ -185,10 +185,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         monitoringStarted = true
 
         clamshellGuard.onPowerWakePreSync = {
-            KeepAwakeService.shared.syncForPowerOrWakeEvent(
-                reason: "SystemPowerWake",
-                declareUserActivityOnRestore: true
-            )
+            KeepAwakeService.shared.syncForSystemWake(reason: "SystemPowerWake")
         }
         clamshellGuard.shouldPreArmClamshellOnACWake = { [weak self] in
             guard let self else { return false }
@@ -208,10 +205,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         clamshellGuard.onSystemWake = { [weak self] in
             guard let self else { return }
             self.monitor.noteSystemWake()
-            KeepAwakeService.shared.syncForPowerOrWakeEvent(
-                reason: "SystemHasPoweredOn",
-                declareUserActivityOnRestore: true
-            )
+            KeepAwakeService.shared.syncForSystemWake(reason: "SystemHasPoweredOn")
             self.evaluateNow(reason: "SystemPowerHasPoweredOn")
             self.scheduleEvaluation(reason: "SystemPowerHasPoweredOnFollowup", delayMs: 150)
         }
@@ -225,10 +219,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
             onEvent: { [weak self] reason, immediate, followupDelayMs in
                 guard let self else { return }
                 if reason == "PowerSourceChange" {
-                    KeepAwakeService.shared.syncForPowerOrWakeEvent(
-                        reason: "PowerSourceChange",
-                        declareUserActivityOnRestore: true
-                    )
+                    KeepAwakeService.shared.syncForPowerSourceChange()
                 }
                 if immediate {
                     self.evaluateNow(reason: reason)

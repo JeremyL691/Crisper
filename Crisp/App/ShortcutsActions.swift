@@ -158,7 +158,10 @@ struct GetBrightnessIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Double> {
         let response = try await send(.init(command: .getBrightness, selector: display.id))
-        return .result(value: response.display?.brightness ?? 0)
+        guard let brightness = response.display?.brightness else {
+            throw ShortcutsActionError.refused(String(localized: "Display not found."))
+        }
+        return .result(value: brightness)
     }
 }
 

@@ -61,8 +61,7 @@ final class VolumeService: ObservableObject {
         } else {
             disabled.insert(uuid)
             forcedCapable.remove(uuid)
-            pending.removeValue(forKey: display.displayID)
-            lastWrittenDDC.removeValue(forKey: display.displayID)
+            invalidate(for: display.displayID)
         }
         UserDefaults.standard.set(Array(forcedCapable), forKey: forcedKey)
         UserDefaults.standard.set(Array(disabled), forKey: disabledKey)
@@ -74,9 +73,11 @@ final class VolumeService: ObservableObject {
     /// displayID cannot inherit it. rememberedCapable stays: it is UUID-keyed
     /// and deliberately permanent.
     func invalidate(for displayID: CGDirectDisplayID) {
+        operations.withLock { $0.invalidate(displayID: displayID) }
         ddcMax.removeValue(forKey: displayID)
         preMuteVolume.removeValue(forKey: displayID)
         pending.removeValue(forKey: displayID)
+        pumpActive.remove(displayID)
         lastWrittenDDC.removeValue(forKey: displayID)
     }
 
@@ -95,8 +96,10 @@ final class VolumeService: ObservableObject {
         }
         let id = display.displayID
         let uuid = display.displayUUID
-        DDCService.shared.readAsync(displayID: id, command: DDCService.volumeVCP) { result in
+        let isCurrent = currentIOCheck(for: id)
+        DDCService.shared.readAsync(displayID: id, command: DDCService.volumeVCP, isCurrent: isCurrent) { result in
             Task { @MainActor in
+                guard isCurrent(), !self.disabled.contains(uuid) else { return }
                 guard let result else {
                     // Only while the feature is hidden: a remembered or forced
                     // display failing a probe is the DDC layer's line to log.
@@ -127,6 +130,7 @@ final class VolumeService: ObservableObject {
     /// Latest pending percent per display; only one DDC write in flight each.
     private var pending: [CGDirectDisplayID: Double] = [:]
     private var pumpActive: Set<CGDirectDisplayID> = []
+    private let operations = OSAllocatedUnfairLock(initialState: DDCOperationGeneration())
     /// Last acknowledged raw VCP volume per display, to skip duplicate I2C writes.
     private var lastWrittenDDC: [CGDirectDisplayID: UInt16] = [:]
 
@@ -134,6 +138,7 @@ final class VolumeService: ObservableObject {
     /// latest value wins, writes paced to the MCCS ~50ms spacing so slider
     /// drags don't flood the I2C bus that brightness shares.
     func setVolume(_ percent: Double, for display: DisplayInfo) {
+        guard !disabled.contains(display.displayUUID) else { return }
         let clamped = max(0.0, min(100.0, percent))
         display.volume = clamped
         pending[display.displayID] = clamped
@@ -143,6 +148,7 @@ final class VolumeService: ObservableObject {
     /// Mute key behavior: at zero, restore the remembered pre-mute level (or
     /// 25 if there is none); otherwise remember the level and drop to zero.
     func toggleMute(for display: DisplayInfo) {
+        guard !disabled.contains(display.displayUUID) else { return }
         if display.volume <= 0 {
             setVolume(preMuteVolume[display.displayID] ?? 25, for: display)
         } else {
@@ -159,23 +165,33 @@ final class VolumeService: ObservableObject {
             return
         }
         pumpActive.insert(id)
-        DDCService.shared.writeAsync(displayID: id, command: DDCService.volumeVCP, value: raw) { success in
+        let isCurrent = currentIOCheck(for: id)
+        DDCService.shared.writeAsync(
+            displayID: id, command: DDCService.volumeVCP, value: raw, isCurrent: isCurrent
+        ) { success in
             Task { @MainActor in
+                guard isCurrent() else { return }
                 if success {
                     self.lastWrittenDDC[id] = raw
                 }
                 try? await Task.sleep(nanoseconds: 50_000_000)  // MCCS write spacing
+                guard isCurrent() else { return }
                 self.pumpActive.remove(id)
                 self.pump(for: id)
             }
         }
     }
 
+    private func currentIOCheck(for id: CGDirectDisplayID) -> @Sendable () -> Bool {
+        let token = operations.withLock { $0.currentToken(for: id) }
+        return { [operations] in operations.withLock { $0.isCurrentTopology(token, for: id) } }
+    }
+
     // MARK: - Volume-key routing
 
     /// The displays the volume keys drive, or empty to pass them through (#276).
     func volumeKeyTargets(in displays: [DisplayInfo]) -> [DisplayInfo] {
-        let candidates = displays.filter { !$0.isBuiltin && $0.volumeSupported }
+        let candidates = displays.filter { !$0.isBuiltin && $0.volumeSupported && !disabled.contains($0.displayUUID) }
         guard !candidates.isEmpty else { return [] }
 
         var deviceID = AudioDeviceID(0)

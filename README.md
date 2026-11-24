@@ -71,7 +71,7 @@ See [docs/BUILDING.md](docs/BUILDING.md) for standalone `swiftc` builds, `crispe
 ## Permissions
 
 - **Administrator password (one-time, optional)**:
-  - **Smooth Scaling**: Writes a display override plist into `/Library/Displays/Contents/Resources/Overrides` (once per monitor).
+  - **Smooth Scaling**: Adds Crisper's modes to the display override plist in `/Library/Displays/Contents/Resources/Overrides`. Turning it off removes the modes Crisper added and preserves existing entries.
   - **Power Saving Mode & RAM Free Up**: Installs a narrowly scoped, `visudo`-validated, current-UID-only rule in `/etc/sudoers.d/crisper-power` allowing strictly `pmset lowpowermode` and `purge` without repeated prompts. Removable in one click from **Settings > Menu Bar**.
 - **Accessibility** (System Settings > Privacy & Security > Accessibility): Needed only for **Brightness Keys** redirection and **Clean Keyboard** / keyboard-locking during **Clean Screen**.
 
@@ -83,6 +83,7 @@ Crisper must be running to accept `crisperctl` commands:
 crisperctl display list                  # text list of displays
 crisperctl display list --json           # JSON with each display's id and uuid
 crisperctl brightness set <display> 40
+crisperctl preset apply -- --json        # apply a preset named --json
 crisperctl display toggle <display>
 crisperctl virtual list
 crisperctl virtual on "Smart Dummy"

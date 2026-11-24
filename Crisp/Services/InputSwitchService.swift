@@ -149,26 +149,10 @@ final class InputSwitchService: ObservableObject {
     /// never takes a monitor away from the other computer.
     @discardableResult
     func reconnect(uuid: String) async -> Result<Void, PhysicalDisplayToggleService.ToggleError> {
-        let toggle = PhysicalDisplayToggleService.shared
-        let returnInput = toggle.disconnected.first { $0.uuid == uuid }?.returnInput
-        let result = await toggle.reconnect(uuid: uuid)
-        guard case .success = result, let returnInput else { return result }
-        // One write: the monitor re-links to this Mac (a 1.5 s hot plug drop) when it lands.
-        guard let displayID = Self.onlineDisplayID(uuid: uuid) else { return result }
-        let written = await DDCService.shared.writeInputAfterReconnect(displayID: displayID, value: returnInput)
-        Self.log.notice("display \(uuid, privacy: .public) reconnected, input \(returnInput, privacy: .public) written: \(written, privacy: .public)")
-        return result
+        await PhysicalDisplayToggleService.shared.reconnect(uuid: uuid)
     }
 
     // MARK: - Private
-
-    private static func onlineDisplayID(uuid: String) -> CGDirectDisplayID? {
-        var count: UInt32 = 0
-        CGGetOnlineDisplayList(0, nil, &count)
-        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        CGGetOnlineDisplayList(count, &ids, &count)
-        return ids.prefix(Int(count)).first { DisplayInfo.cgDisplayUUID($0) == uuid }
-    }
 
     private func setMacInput(_ value: UInt16, for uuid: String, marked: Bool) {
         guard macInput[uuid] != value || markedByUser.contains(uuid) != marked else { return }

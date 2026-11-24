@@ -13,6 +13,7 @@ struct AdvancedGeneralTab: View {
     @ObservedObject private var coreBrightness = CoreBrightnessService.shared
     @EnvironmentObject var displayManager: DisplayManager
     @State private var cliInstalled = CrispctlInstaller.isInstalled
+    @State private var cliInstallError: String?
 
     private var physicalDisplays: [DisplayInfo] {
         displayManager.displays.filter { !VirtualDisplayService.shared.isVirtualDisplay($0.displayID) }
@@ -51,8 +52,9 @@ struct AdvancedGeneralTab: View {
                     }
                 ))
             }
-            Section("Brightness") {
-                if showsAutoBrightness {
+            // Every row here needs Auto Brightness, so the section exists exactly when it does.
+            if showsAutoBrightness {
+                Section("Brightness") {
                     CenteredToggle(title: "Auto Brightness",
                                    detail: Text("External displays follow the built-in display's brightness"),
                                    isOn: $autoBrightness.isEnabled)
@@ -61,30 +63,30 @@ struct AdvancedGeneralTab: View {
                                        detail: Text("External displays follow the built-in but keep the difference you set"),
                                        isOn: $autoBrightness.relativeMode)
                     }
-                }
-                if autoBrightness.isEnabled && physicalDisplays.count > 1 {
-                    CenteredToggle(title: "Match brightness by luminance",
-                                   detail: Text("Matched by each display's rated nits"),
-                                   isOn: $settings.matchBrightnessByLuminance)
-                }
-                if settings.matchBrightnessByLuminance
-                    && autoBrightness.isEnabled && hasBuiltinAndExternal {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("Absolute brightness ratio")
-                            Spacer()
-                            Text("\(ratioPercent)%").monospacedDigit().foregroundStyle(.secondary)
+                    if autoBrightness.isEnabled && physicalDisplays.count > 1 {
+                        CenteredToggle(title: "Match brightness by luminance",
+                                       detail: Text("Matched by each display's rated nits"),
+                                       isOn: $settings.matchBrightnessByLuminance)
+                    }
+                    if settings.matchBrightnessByLuminance
+                        && autoBrightness.isEnabled && hasBuiltinAndExternal {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Absolute brightness ratio")
+                                Spacer()
+                                Text("\(ratioPercent)%").monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: $settings.combinedBuiltinBrightnessFactor,
+                                in: CombinedBrightnessMath.builtinAdjustmentRange
+                            )
+                            .accessibilityLabel("Absolute brightness ratio")
+                            .accessibilityValue("\(ratioPercent)%")
+                            Text("From each panel's rated nits. HDR monitors report their HDR peak, "
+                                 + "so lower this if the built-in runs too bright")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        Slider(
-                            value: $settings.combinedBuiltinBrightnessFactor,
-                            in: CombinedBrightnessMath.builtinAdjustmentRange
-                        )
-                        .accessibilityLabel("Absolute brightness ratio")
-                        .accessibilityValue("\(ratioPercent)%")
-                        Text("From each panel's rated nits. HDR monitors report their HDR peak, "
-                             + "so lower this if the built-in runs too bright")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -123,21 +125,32 @@ struct AdvancedGeneralTab: View {
                     CenteredToggle(title: "Command Line Tool", detail: Text("Links crisperctl into /usr/local/bin"), isOn: Binding(
                         get: { cliInstalled },
                         set: { newValue in
-                            if newValue { CrispctlInstaller.install() } else { CrispctlInstaller.uninstall() }
+                            cliInstallError = newValue ? CrispctlInstaller.install() : CrispctlInstaller.uninstall()
                             cliInstalled = CrispctlInstaller.isInstalled
                         }
                     ))
+                    if let cliInstallError {
+                        Text(cliInstallError).font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)  // the window's scroll view scrolls; this one took the wheel
-        .onAppear {
-            cliInstalled = CrispctlInstaller.isInstalled
-            settings.launchAtLogin = LaunchService.shared.isEnabled  // may change in System Settings
-            coreBrightness.refresh()
+        .onAppear(perform: refreshExternalState)
+        // The window can stay open while these change in System Settings or Terminal;
+        // there is no notification for login items, so re-read on returning to Crisper.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshExternalState()
         }
         .frame(maxWidth: .infinity)  // the window sets the width, scroll bar included
+    }
+
+    private func refreshExternalState() {
+        cliInstalled = CrispctlInstaller.isInstalled
+        let launchesAtLogin = LaunchService.shared.isEnabled
+        if settings.launchAtLogin != launchesAtLogin { settings.launchAtLogin = launchesAtLogin }
+        coreBrightness.refresh()
     }
 }
 

@@ -104,8 +104,12 @@ struct ReconnectDisplaysSection: View {
         guard !busyUUIDs.contains(record.uuid) else { return }
         busyUUIDs.insert(record.uuid)
         Task { @MainActor in
-            _ = await InputSwitchService.shared.reconnect(uuid: record.uuid)
+            ConnectionErrors.shared.clear(record.uuid)
+            let result = await InputSwitchService.shared.reconnect(uuid: record.uuid)
             displayManager.refreshDisplays()
+            if case .failure(let error) = result {
+                ConnectionErrors.shared.show(error.description, for: record.uuid)
+            }
             busyUUIDs.remove(record.uuid)
         }
     }
@@ -118,6 +122,7 @@ private struct DisconnectedDisplayRow: View {
     let busy: Bool
     let onReconnect: () -> Void
     @State private var isHovered = false
+    @ObservedObject private var errors = ConnectionErrors.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -128,6 +133,9 @@ private struct DisconnectedDisplayRow: View {
                     Text(record.name).font(.body).lineLimit(1)
                     Text(verbatim: "\(record.width)×\(record.height)")
                         .font(.caption2).foregroundColor(.secondary)
+                    if let message = errors.messages[record.uuid] {
+                        Text(message).font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
             .opacity(isHovered ? 1 : 0.6)

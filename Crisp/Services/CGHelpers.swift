@@ -4,10 +4,11 @@ import Foundation
 enum CGHelpers {
 
     /// Runs a blocking operation with a timeout, returning `fallback` if it doesn't finish
-    /// in time. For CoreGraphics / WindowServer IPC calls that can hang indefinitely.
+    /// in time. The operation is not cancelled, and an optional callback receives its late result.
     static func runWithTimeout<T: Sendable>(
         seconds: Double,
         fallback: T,
+        onLateCompletion: (@Sendable (T) -> Void)? = nil,
         operation: @escaping @Sendable () -> T
     ) async -> T {
         await withCheckedContinuation { cont in
@@ -15,7 +16,11 @@ enum CGHelpers {
 
             DispatchQueue.global(qos: .userInitiated).async {
                 let result = operation()
-                if once.claim() { cont.resume(returning: result) }
+                if once.claim() {
+                    cont.resume(returning: result)
+                } else {
+                    onLateCompletion?(result)
+                }
             }
 
             DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {

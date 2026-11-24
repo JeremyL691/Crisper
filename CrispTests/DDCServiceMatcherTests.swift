@@ -5,6 +5,14 @@ import CoreGraphics
 /// `DDCServiceMatcher` compiles directly into this test target, so no
 /// `@testable import Crisp` is needed.
 final class DDCServiceMatcherTests: XCTestCase {
+    func testReconnectMatchesOnlyTheAttachedMonitorOfTheSameModel() {
+        let unplugged = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0, location: "port-a")
+        let attached = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0, location: "port-b")
+        XCTAssertFalse(unplugged.matchesAttachment(attached, excluding: [attached]))
+        XCTAssertTrue(attached.matchesAttachment(attached, excluding: [unplugged]))
+        let ambiguous = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0)
+        XCTAssertFalse(ambiguous.matchesAttachment(attached, excluding: [unplugged]))
+    }
 
     // MARK: - Strategy 1: exact (vendor + product + serial) matching
 

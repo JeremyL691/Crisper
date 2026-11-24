@@ -211,6 +211,9 @@ final class BrightnessBoostService {
 
     // MARK: - Toggle
 
+    private var boostRequestTokens: [CGDirectDisplayID: UUID] = [:]
+    private var pendingBoostHDR: [CGDirectDisplayID: (uuid: String, token: UUID)] = [:]
+
     /// Enables or disables boost. Async: switching an external into HDR mode
     /// needs time to settle. Returns false when enabling failed (caller
     /// reverts the toggle UI); `revertOwnHDR` false skips the HDR revert on
@@ -218,16 +221,19 @@ final class BrightnessBoostService {
     @discardableResult
     func setEnabled(_ enabled: Bool, for display: DisplayInfo, revertOwnHDR: Bool = true) async -> Bool {
         let uuid = display.displayUUID
+        let displayID = display.displayID
+        let boostToken = UUID()
+        boostRequestTokens[displayID] = boostToken
         if enabled {
             // Cancel any disable-collapse still running from a rapid off/on
             // flip, and clear the collapsing marker so syncOverlay stops
             // skipping this display.
-            BrightnessService.shared.cancelAnimation(for: display.displayID)
-            maxAnimators[display.displayID]?.cancel()
-            collapsingDisplays.remove(display.displayID)
+            BrightnessService.shared.cancelAnimation(for: displayID)
+            maxAnimators[displayID]?.cancel()
+            collapsingDisplays.remove(displayID)
             // Externals in SDR mode: switch to HDR first.
-            var switchedHDRForThisAttempt: (uuid: String, token: UUID)?
-            if !display.isBuiltin, potentialHeadroom(for: display.displayID) <= 1.05 {
+            if !display.isBuiltin, potentialHeadroom(for: displayID) <= 1.05,
+               pendingBoostHDR[displayID] == nil {
                 guard let targetUUID = uniqueDisplayUUID(for: display),
                       supportsHDRMode(display.displayID) else { return false }
                 let requestToken = UUID()
@@ -236,18 +242,22 @@ final class BrightnessBoostService {
                     true, for: display, expectedUUID: targetUUID,
                     requestToken: requestToken
                 ) else { return false }
-                switchedHDRForThisAttempt = (targetUUID, requestToken)
+                pendingBoostHDR[displayID] = (targetUUID, requestToken)
+            }
+            if pendingBoostHDR[displayID] != nil {
                 // Give WindowServer a moment to re-sync the display in HDR mode.
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+            guard boostRequestTokens[displayID] == boostToken else { return false }
+            let switchedHDR = pendingBoostHDR.removeValue(forKey: displayID)
             let potential = potentialHeadroom(for: display.displayID)
             let newMax = BrightnessBoostMath.sliderMax(potentialHeadroom: potential)
             guard newMax > 100 else {
                 // No usable headroom: fail quietly, and roll back an HDR
-                // switch made by THIS attempt (a half-engaged switch leaves
+                // switch made for boost (a half-engaged switch leaves
                 // HDR rendering into an SDR link). A user-set HDR mode is
                 // left alone.
-                if let request = switchedHDRForThisAttempt {
+                if let request = switchedHDR {
                     _ = setHDRMode(
                         false, for: display, expectedUUID: request.uuid,
                         requestToken: request.token
@@ -256,21 +266,31 @@ final class BrightnessBoostService {
                 return false
             }
             UserDefaults.standard.set(true, forKey: enabledKey(uuid))
-            if switchedHDRForThisAttempt != nil {
+            if let switchedHDR, hdrRequestTokens[displayID] == switchedHDR.token {
                 UserDefaults.standard.set(true, forKey: switchedHDRKey(uuid))
             }
             animateMaxBrightness(to: newMax, for: display)
             syncOverlay(for: display)
             return true
         } else {
+            let pendingHDR = pendingBoostHDR.removeValue(forKey: displayID)
             let switchedHDR = UserDefaults.standard.bool(forKey: switchedHDRKey(uuid))
-            UserDefaults.standard.removeObject(forKey: switchedHDRKey(uuid))
             UserDefaults.standard.set(false, forKey: enabledKey(uuid))
             collapseAndDisable(for: display)
             // Revert HDR only if boost switched it on for itself; already-off
             // HDR means nothing to undo.
-            if revertOwnHDR, switchedHDR, !display.isBuiltin, isHDREnabled(for: display) {
-                _ = await setHDRPreference(false, for: display)
+            if revertOwnHDR {
+                if let pendingHDR {
+                    _ = setHDRMode(
+                        false, for: display, expectedUUID: pendingHDR.uuid,
+                        requestToken: pendingHDR.token
+                    )
+                } else if switchedHDR, !display.isBuiltin, isHDREnabled(for: display) {
+                    _ = await setHDRPreference(false, for: display)
+                }
+            }
+            if boostRequestTokens[displayID] == boostToken {
+                UserDefaults.standard.removeObject(forKey: switchedHDRKey(uuid))
             }
             return true
         }
@@ -427,6 +447,8 @@ final class BrightnessBoostService {
         maxAnimators.removeValue(forKey: displayID)
         headroomLossSince.removeValue(forKey: displayID)
         hdrRequestTokens.removeValue(forKey: displayID)
+        boostRequestTokens.removeValue(forKey: displayID)
+        pendingBoostHDR.removeValue(forKey: displayID)
         collapsingDisplays.remove(displayID)
         hdrSupportCache.removeValue(forKey: displayID)
     }
@@ -512,9 +534,10 @@ final class BrightnessBoostService {
                 requestToken: requestToken
             )
         }
-        if isEnabled(for: display) {
+        if isEnabled(for: display) || pendingBoostHDR[displayID] != nil {
             _ = await setEnabled(false, for: display, revertOwnHDR: false)
         }
+        let boostToken = boostRequestTokens[displayID]
         // Wait on the live collapse set, not the isEnabled flag: a collapse
         // may already be animating this display with the flag cleared.
         // Capped at 2s so a cancelled animator can't spin this forever.
@@ -526,6 +549,8 @@ final class BrightnessBoostService {
         // Brief settle so the collapse's last brightness write lands
         // before the mode switch.
         try? await Task.sleep(nanoseconds: 200_000_000)
+        if boostRequestTokens[displayID] != boostToken,
+           isEnabled(for: display) || pendingBoostHDR[displayID] != nil { return false }
         return setHDRMode(
             false, for: display, expectedUUID: targetUUID,
             requestToken: requestToken

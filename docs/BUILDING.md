@@ -43,7 +43,7 @@ swiftc -O -swift-version 6 -target arm64-apple-macos14.0 \
   -o crisperctl-bin
 ```
 
-With Xcode, `xcodegen generate && xcodebuild -project Crisp.xcodeproj -scheme crispctl -configuration Release` builds the same target.
+With Xcode, `xcodegen generate && xcodebuild -project Crisp.xcodeproj -scheme crispctl -configuration Release` builds the same target. Building the `Crisp` scheme also embeds `crisperctl` in the app bundle.
 
 ## Before Opening a PR
 

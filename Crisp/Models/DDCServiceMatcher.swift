@@ -11,7 +11,7 @@ import CoreGraphics
 enum DDCServiceMatcher {
     /// Vendor/product/serial mirror IORegistry `ProductAttributes`/CG's equivalents.
     /// Location is the stable CoreDisplay/IORegistry path, when macOS exposes it.
-    struct Identity: Equatable {
+    struct Identity: Codable, Sendable, Equatable {
         let vendor: UInt32
         let product: UInt32
         let serial: UInt32
@@ -22,6 +22,19 @@ enum DDCServiceMatcher {
             self.product = product
             self.serial = serial
             self.location = location
+        }
+
+        func matchesAttachment(_ live: Identity, excluding peers: [Identity]) -> Bool {
+            guard vendor == live.vendor, product == live.product else { return false }
+            if serial != 0, live.serial != 0, serial != live.serial { return false }
+            let sameModel = peers.filter { $0.vendor == vendor && $0.product == product }
+            if serial != 0, serial == live.serial, !sameModel.contains(where: { $0.serial == serial }) {
+                return true
+            }
+            if let location, let liveLocation = live.location {
+                return location == liveLocation && !sameModel.contains { $0.location == liveLocation }
+            }
+            return sameModel.isEmpty
         }
     }
 

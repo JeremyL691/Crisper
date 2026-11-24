@@ -41,6 +41,10 @@ final class SystemMonitorService: ObservableObject {
     private var consecutiveNilTempReads = 0
 
     private var pollTask: Task<Void, Never>?
+    /// CPU ticks and disk byte counters are cumulative. Any pause in full polling would turn
+    /// the next delta into an average over the whole time the panel was closed or the Mac was
+    /// asleep, so the next full sample re-arms the baselines instead of reporting a rate.
+    private var rateBaselinesNeedReset = true
     private var feedbackClearTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -109,9 +113,12 @@ final class SystemMonitorService: ObservableObject {
         guard !isShutdown else { return }
         Task { [weak self] in
             guard let self else { return }
-            let snapshot = await self.collector.sampleDisk(includeVolumes: true)
+            let snapshot = await self.collector.sampleDiskCapacity(includeVolumes: true)
             guard !self.isShutdown else { return }
-            self.disk = snapshot
+            self.disk = snapshot.withThroughput(
+                readBytesPerSec: self.disk.readBytesPerSec,
+                writeBytesPerSec: self.disk.writeBytesPerSec
+            )
         }
     }
 
@@ -172,7 +179,16 @@ final class SystemMonitorService: ObservableObject {
         case stopped
         case temperatureOnly(interval: TimeInterval)
         case full(interval: TimeInterval)
+
+        var isFull: Bool {
+            if case .full = self { return true }
+            return false
+        }
     }
+
+    /// After a rate baseline is re-armed, the first real CPU/disk rate follows this soon
+    /// instead of a full refresh interval later.
+    private static let rateWarmupSeconds: TimeInterval = 1.0
 
     private var desiredPollMode: PollMode {
         guard isStarted, !isShutdown, !isSleeping, !areScreensAsleep else { return .stopped }
@@ -191,6 +207,7 @@ final class SystemMonitorService: ObservableObject {
         pollTask = nil
 
         let mode = desiredPollMode
+        if !mode.isFull { rateBaselinesNeedReset = true }
         guard mode != .stopped else { return }
 
         pollTask = Task { @MainActor [weak self] in
@@ -213,10 +230,16 @@ final class SystemMonitorService: ObservableObject {
                 case .full(let interval):
                     let refreshVolumes = (tickCount % 5 == 0)
                     tickCount += 1
-                    let payload = await self.collector.sampleFull(includeVolumes: refreshVolumes)
+                    let resetRateBaselines = self.rateBaselinesNeedReset
+                    self.rateBaselinesNeedReset = false
+                    let payload = await self.collector.sampleFull(
+                        includeVolumes: refreshVolumes,
+                        resetRateBaselines: resetRateBaselines
+                    )
                     guard !Task.isCancelled, !self.isShutdown else { return }
                     self.applyFullSample(payload)
-                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                    let delay = payload.hasRates ? interval : min(interval, Self.rateWarmupSeconds)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
             }
         }
@@ -229,17 +252,22 @@ final class SystemMonitorService: ObservableObject {
         }
     }
 
+    /// A sample that only re-armed the rate baselines carries no CPU load or disk rate; the
+    /// last shown values stay until the next sample and nothing is added to the history.
     private func applyFullSample(_ payload: TelemetryFullSample) {
-        cpuSample = payload.cpu
-        updateCPUTemperature(payload.cpu.temperatureC)
-        cpuRing.append(payload.cpu)
-        cpuHistory = cpuRing.elements
+        updateCPUTemperature(payload.cpuTemperatureC)
+        if let cpu = payload.cpu {
+            cpuSample = cpu
+            cpuRing.append(cpu)
+            cpuHistory = cpuRing.elements
+        }
 
         gpuSample = payload.gpu
         gpuRing.append(payload.gpu)
         gpuHistory = gpuRing.elements
 
-        disk = payload.disk
+        let rates = payload.diskRates ?? (disk.readBytesPerSec, disk.writeBytesPerSec)
+        disk = payload.disk.withThroughput(readBytesPerSec: rates.read, writeBytesPerSec: rates.write)
         ram = payload.ram
     }
 
@@ -346,10 +374,17 @@ final class SystemMonitorService: ObservableObject {
 // MARK: - Off-Main-Actor Telemetry Collector
 
 private struct TelemetryFullSample: Sendable {
-    let cpu: CPUSample
+    /// Nil when this sample only re-armed the CPU tick baseline.
+    let cpu: CPUSample?
+    let cpuTemperatureC: Double?
     let gpu: GPUSample
+    /// Capacity, temperature, and volumes; throughput is carried in `diskRates`.
     let disk: DiskSnapshot
+    /// Nil when this sample only re-armed the disk byte-counter baseline.
+    let diskRates: (read: Double, write: Double)?
     let ram: RAMSnapshot
+
+    var hasRates: Bool { cpu != nil && diskRates != nil }
 }
 
 private actor TelemetryCollector {
@@ -372,8 +407,8 @@ private actor TelemetryCollector {
     private var hostPortDeallocated = false
     private let smcReader = SMCTemperatureReader()
 
-    private var previousCPUTicks: CPUTicks?
-    private var previousDiskIO: DiskIOSnapshot?
+    private var cpuTicksBaseline = CounterBaseline<CPUTicks>()
+    private var diskIOBaseline = CounterBaseline<DiskIOSnapshot>()
     private var cachedVolumes: [VolumeInfo] = []
 
     init(totalRAMBytes: UInt64) {
@@ -395,12 +430,25 @@ private actor TelemetryCollector {
         smcReader.readCPUTemperatureC()
     }
 
-    func sampleFull(includeVolumes: Bool) -> TelemetryFullSample {
-        let cpu = sampleCPU()
+    func sampleFull(includeVolumes: Bool, resetRateBaselines: Bool) -> TelemetryFullSample {
+        if resetRateBaselines {
+            cpuTicksBaseline.reset()
+            diskIOBaseline.reset()
+        }
+        let cpuTemperatureC = smcReader.readCPUTemperatureC()
+        let cpu = sampleCPU(temperatureC: cpuTemperatureC)
         let gpu = sampleGPU()
-        let disk = sampleDisk(includeVolumes: includeVolumes)
+        let disk = sampleDiskCapacity(includeVolumes: includeVolumes)
+        let diskRates = sampleDiskThroughput()
         let ram = sampleRAM()
-        return TelemetryFullSample(cpu: cpu, gpu: gpu, disk: disk, ram: ram)
+        return TelemetryFullSample(
+            cpu: cpu,
+            cpuTemperatureC: cpuTemperatureC,
+            gpu: gpu,
+            disk: disk,
+            diskRates: diskRates,
+            ram: ram
+        )
     }
 
     func sampleRAM() -> RAMSnapshot {
@@ -432,7 +480,9 @@ private actor TelemetryCollector {
         return RAMSnapshot.from(vmCounts: counts)
     }
 
-    func sampleDisk(includeVolumes: Bool) -> DiskSnapshot {
+    /// Primary-volume capacity, disk temperature, and volumes. Throughput is left at zero:
+    /// it is a rate between two samples, which only the polling loop's baseline can give.
+    func sampleDiskCapacity(includeVolumes: Bool) -> DiskSnapshot {
         let rootURL = URL(fileURLWithPath: "/")
         let rootKeys: Set<URLResourceKey> = [
             .volumeNameKey,
@@ -457,15 +507,14 @@ private actor TelemetryCollector {
             cachedVolumes = enumerateVolumes()
         }
 
-        let (readRate, writeRate) = sampleDiskThroughput()
         let tempC = smcReader.readDiskTemperatureC()
 
         return DiskSnapshot(
             name: name,
             usedBytes: used,
             totalBytes: total,
-            readBytesPerSec: readRate,
-            writeBytesPerSec: writeRate,
+            readBytesPerSec: 0,
+            writeBytesPerSec: 0,
             temperatureC: tempC,
             volumes: cachedVolumes,
             usedFraction: VolumeInfo.clampedFraction(usedBytes: used, totalBytes: total)
@@ -474,15 +523,12 @@ private actor TelemetryCollector {
 
     // MARK: - CPU Sampling
 
-    private func sampleCPU() -> CPUSample {
-        let tempC = smcReader.readCPUTemperatureC()
-        guard let current = readTotalCPUTicks() else {
+    private func sampleCPU(temperatureC tempC: Double?) -> CPUSample? {
+        guard let reading = readTotalCPUTicks() else {
             return CPUSample(user: 0, system: 0, idle: 100, temperatureC: tempC)
         }
-
-        defer { previousCPUTicks = current }
-        guard let previous = previousCPUTicks else {
-            return CPUSample(user: 0, system: 0, idle: 100, temperatureC: tempC)
+        guard let (previous, current) = cpuTicksBaseline.advance(to: reading) else {
+            return nil
         }
 
         let dUser = current.user >= previous.user ? current.user - previous.user : 0
@@ -582,19 +628,17 @@ private actor TelemetryCollector {
 
     // MARK: - Disk Throughput & Volumes
 
-    private func sampleDiskThroughput() -> (readPerSec: Double, writePerSec: Double) {
+    private func sampleDiskThroughput() -> (read: Double, write: Double)? {
         let (totalRead, totalWrite) = readTotalBlockStorageBytes()
         let now = ProcessInfo.processInfo.systemUptime
-        let current = DiskIOSnapshot(readBytes: totalRead, writeBytes: totalWrite, timestamp: now)
+        let reading = DiskIOSnapshot(readBytes: totalRead, writeBytes: totalWrite, timestamp: now)
+        guard let (previous, current) = diskIOBaseline.advance(to: reading) else { return nil }
 
-        defer { previousDiskIO = current }
-        guard let previous = previousDiskIO else { return (0, 0) }
-
-        let dt = now - previous.timestamp
+        let dt = current.timestamp - previous.timestamp
         guard dt > 0.05 else { return (0, 0) }
 
-        let dRead = totalRead >= previous.readBytes ? Double(totalRead - previous.readBytes) : 0
-        let dWrite = totalWrite >= previous.writeBytes ? Double(totalWrite - previous.writeBytes) : 0
+        let dRead = current.readBytes >= previous.readBytes ? Double(current.readBytes - previous.readBytes) : 0
+        let dWrite = current.writeBytes >= previous.writeBytes ? Double(current.writeBytes - previous.writeBytes) : 0
         return (dRead / dt, dWrite / dt)
     }
 

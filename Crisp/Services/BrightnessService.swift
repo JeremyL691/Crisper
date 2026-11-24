@@ -392,8 +392,13 @@ final class BrightnessService: @unchecked Sendable {
                         self.ddcPumpLock.withLock {
                             guard self.ddcOperationGeneration.isLatestRequest(
                                 readToken, for: displayID
-                            ) else { return }
-                            if firstRead || abs(brightness - display.brightness) > 3.0 {
+                            ), display.brightness <= 100 else { return }
+                            let usesSoftwareBrightness = self.ddcAvailableLock.withLock {
+                                self.hdrDimmedDisplays.contains(displayID)
+                                    || self.forcedSoftwareUUIDs.contains(display.displayUUID)
+                                    || self.ddcAvailable[displayID] == false
+                            }
+                            if !usesSoftwareBrightness && (firstRead || abs(brightness - display.brightness) > 3.0) {
                                 display.brightness = brightness
                             }
                         }

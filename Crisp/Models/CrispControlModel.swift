@@ -436,6 +436,9 @@ enum CrispControlModel {
             guard let display = target(of: request, in: displays) else {
                 return .init(.failure("display not found"), nil, nil, nil)
             }
+            guard display.connected != false else {
+                return .init(.failure("display is not connected"), nil, nil, nil)
+            }
             return .init(.success(display: display), nil, nil, nil)
         case .setBrightness:
             return handleSetBrightness(request, displays: displays, brightnessBoostState: brightnessBoostState)
@@ -921,6 +924,8 @@ enum CrispControlCLIModel {
         add --json to any command: one JSON object per call, {"ok":true,...} or
         {"ok":false,"error":"..."}, which is what the field names in each command's help
         describe.
+        Use -- before a literal argument that looks like an option, e.g.
+        crispctl preset apply -- --json
         Exit codes: 0 ok, 1 Crisp unreachable, 2 bad arguments, 3 Crisp refused.
         """
 
@@ -1010,6 +1015,18 @@ enum CrispControlCLIModel {
         if let skill = skillRequest(arguments) { return skill }
         if let request = matchedRequest(arguments) { return .request(request) }
         return .failure(usageMessage(for: arguments))
+    }
+
+    static func parseInvocation(arguments: [String]) -> (json: Bool, result: ParseResult) {
+        let separator = arguments.firstIndex(of: "--")
+        let options = arguments[..<(separator ?? arguments.endIndex)]
+        let command = options.filter { $0 != "--json" }
+        let json = options.contains("--json")
+        guard let separator else { return (json, parse(arguments: command)) }
+
+        let literalCommand = command + arguments.dropFirst(separator + 1)
+        if let request = matchedRequest(literalCommand) { return (json, .request(request)) }
+        return (json, .failure(usageMessage(for: literalCommand)))
     }
     private static func helpRequest(_ arguments: [String]) -> ParseResult? {
         let helpWords: Set<String> = ["help", "--help", "-h"]

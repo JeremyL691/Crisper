@@ -310,19 +310,20 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
     /// (Carbon refuses a second registration of the same combo), then `assign` gives it here.
     func assignStaticShortcut(_ shortcut: KeyboardShortcut?, assign: (KeyboardShortcut?) -> Void) {
         if let shortcut {
-            if hidpiShortcut?.sameKeys(as: shortcut) == true { hidpiShortcut = nil }
-            if brightnessUpShortcut?.sameKeys(as: shortcut) == true { brightnessUpShortcut = nil }
-            if brightnessDownShortcut?.sameKeys(as: shortcut) == true { brightnessDownShortcut = nil }
-            if volumeUpShortcut?.sameKeys(as: shortcut) == true { volumeUpShortcut = nil }
-            if volumeDownShortcut?.sameKeys(as: shortcut) == true { volumeDownShortcut = nil }
-            if muteShortcut?.sameKeys(as: shortcut) == true { muteShortcut = nil }
+            guard PresetService.shared.releaseShortcut(shortcut) else { return }
+            clearStaticShortcuts(matching: shortcut)
         }
         assign(shortcut)
-        if let shortcut {
-            PresetService.shared.stealShortcutFromPresets(shortcut)  // persists and syncs
-        } else {
-            HotkeyService.shared.syncRegistrations()
-        }
+        HotkeyService.shared.syncRegistrations()
+    }
+
+    func clearStaticShortcuts(matching shortcut: KeyboardShortcut) {
+        if hidpiShortcut?.sameKeys(as: shortcut) == true { hidpiShortcut = nil }
+        if brightnessUpShortcut?.sameKeys(as: shortcut) == true { brightnessUpShortcut = nil }
+        if brightnessDownShortcut?.sameKeys(as: shortcut) == true { brightnessDownShortcut = nil }
+        if volumeUpShortcut?.sameKeys(as: shortcut) == true { volumeUpShortcut = nil }
+        if volumeDownShortcut?.sameKeys(as: shortcut) == true { volumeDownShortcut = nil }
+        if muteShortcut?.sameKeys(as: shortcut) == true { muteShortcut = nil }
     }
 
     // MARK: - Per-Display Settings
@@ -350,14 +351,11 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
 
     // MARK: - JSON Persistence Helpers
 
-    func save<T: Encodable>(_ value: T, filename: String) {
+    func save<T: Encodable>(_ value: T, filename: String) throws {
         let url = supportDir.appendingPathComponent(filename)
-        do {
-            let data = try JSONEncoder().encode(value)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            // best-effort persistence; a failed write is non-fatal
-        }
+        let data = try JSONEncoder().encode(value)
+        try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
     }
 
     func load<T: Decodable>(_ type: T.Type, filename: String) -> T? {

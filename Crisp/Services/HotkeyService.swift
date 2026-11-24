@@ -57,9 +57,10 @@ final class HotkeyService {
 
     /// Rebuilds every registration from current state: one hotkey per preset
     /// with a shortcut, plus the static Toggle HiDPI, brightness, volume and mute
-    /// actions. Idempotent; called from launch, PresetService.savePresets(), and
+    /// actions. Called from launch, shortcut changes, and
     /// the recorder.
     func syncRegistrations() {
+        stopRepeat()
         for reg in registrations.values { UnregisterEventHotKey(reg.ref) }
         registrations = [:]
         guard suspensions == 0 else {

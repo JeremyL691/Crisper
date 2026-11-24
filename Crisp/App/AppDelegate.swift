@@ -98,19 +98,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         let fm = FileManager.default
-        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let srcPresets = appSupport
-                .appendingPathComponent("Crisp", isDirectory: true)
-                .appendingPathComponent("presets.json")
-            let dstDir = appSupport.appendingPathComponent("Crisper", isDirectory: true)
-            let dstPresets = dstDir.appendingPathComponent("presets.json")
-            if fm.fileExists(atPath: srcPresets.path), !fm.fileExists(atPath: dstPresets.path) {
-                try? fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
-                try? fm.copyItem(at: srcPresets, to: dstPresets)
-            }
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        do {
+            try importCrispPresets(in: appSupport, using: fm)
+        } catch {
+            log.error("Could not import Crisp presets: \(error.localizedDescription, privacy: .public)")
+            return false
         }
         defaults.set(true, forKey: "crisper.didImportFromCrisp")
         return true
+    }
+
+    private static func importCrispPresets(in appSupport: URL, using fm: FileManager) throws {
+        let source = appSupport.appendingPathComponent("Crisp/presets.json")
+        let destinationDirectory = appSupport.appendingPathComponent("Crisper", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("presets.json")
+        do {
+            guard try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return
+        }
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: destination.path, isDirectory: &isDirectory), !isDirectory.boolValue { return }
+        try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        try fm.copyItem(at: source, to: destination)
     }
 
     /// One-time migration of legacy `fd.*` UserDefaults keys into the `crisp.*`
@@ -684,6 +699,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             })
         }
         blocks.append(block("reconnect") { ReconnectDisplaysSection() })
+        blocks.append(block("presets") { PresetListView() })
         blocks.append(block("effects") {
             ScreenEffectsView(onClosePanel: { [weak self] in self?.closePanel() })
         })

@@ -17,6 +17,14 @@ final class OSDBannerModel: ObservableObject {
     var slide: ((Double) -> Void)?
     /// Takes the close badge's click.
     var dismiss: (() -> Void)?
+
+    func setSliderLevel(_ level: Double) {
+        self.level = level
+        if image == .mute || image == .volume {
+            image = level > 0 ? .volume : .mute
+        }
+        slide?(level)
+    }
 }
 
 /// The banner OSDBannerService draws on macOS 26: the display name over a
@@ -75,10 +83,7 @@ struct OSDBannerView: View {
         Group {
             if model.hovering {
                 Slider(value: Binding(get: { model.level },
-                                      set: { level in
-                                          model.level = level
-                                          model.slide?(level)
-                                      }),
+                                      set: { model.setSliderLevel($0) }),
                        in: 0...1)
                     .controlSize(.small)
                     .tint(.white)

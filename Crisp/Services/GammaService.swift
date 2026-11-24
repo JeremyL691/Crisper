@@ -104,10 +104,14 @@ final class GammaService: @unchecked Sendable {
                 activeAdjustments[displayID] = adj
             }
         }
-        CGSetDisplayTransferByFormula(displayID,
-            0.0, 1.0, 1.0,
-            0.0, 1.0, 1.0,
-            0.0, 1.0, 1.0)
+        if BrightnessService.shared.currentSoftwareBrightness(for: displayID) != nil {
+            applyFormula(GammaAdjustment(), for: displayID)
+        } else {
+            CGSetDisplayTransferByFormula(displayID,
+                0.0, 1.0, 1.0,
+                0.0, 1.0, 1.0,
+                0.0, 1.0, 1.0)
+        }
     }
 
     /// Drops the in-memory adjustment only: display IDs are reused, and a stale entry
@@ -425,6 +429,7 @@ final class GammaService: @unchecked Sendable {
         p.bHi *= brightnessFactor
         // Matches applyFormula: the boost region may rise above 1.0.
         let cap = max(1.0, brightnessFactor)
+        let lastLevel = Double(levels - 1)
 
         for i in 0..<capacity {
             let input = Double(i) / Double(capacity - 1)
@@ -432,8 +437,8 @@ final class GammaService: @unchecked Sendable {
             func tableValue(lo: Double, hi: Double, gam: Double) -> CGGammaValue {
                 let raw = lo + (hi - lo) * pow(input, gam)
                 let clamped = max(0.0, min(cap, raw))
-                // Quantize to `levels` discrete steps
-                let stepped = floor(clamped * Double(levels)) / Double(levels)
+                let bucket = min(lastLevel, floor(clamped / cap * Double(levels)))
+                let stepped = bucket / lastLevel * cap
                 return CGGammaValue(stepped)
             }
 

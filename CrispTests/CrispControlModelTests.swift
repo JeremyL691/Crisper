@@ -29,6 +29,21 @@ final class CrispControlModelTests: XCTestCase {
         connected: false
     )
 
+    func testInvocationTreatsJSONFlagAfterSeparatorAsPresetName() {
+        let expected: CrispControlCLIModel.ParseResult = .request(.init(command: .applyPreset, selector: "--json"))
+        let plain = CrispControlCLIModel.parseInvocation(arguments: ["preset", "apply", "--", "--json"])
+        XCTAssertFalse(plain.json)
+        XCTAssertEqual(plain.result, expected)
+        let json = CrispControlCLIModel.parseInvocation(arguments: ["preset", "--json", "apply", "--", "--json"])
+        XCTAssertTrue(json.json)
+        XCTAssertEqual(json.result, expected)
+    }
+
+    func testGetBrightnessFailsForSoftDisconnectedDisplay() {
+        let result = CrispControlModel.handle(Data(#"{"command":"getBrightness","display":9}"#.utf8), displays: [held])
+        XCTAssertEqual(result.response, .failure("display is not connected"))
+    }
+
     func testParserSupportsEveryControlCommandByIDAndUUID() {
         let cases: [([String], CrispControlRequest)] = [
             (["display", "list"], .init(command: .list)),

@@ -192,7 +192,10 @@ final class DisplayModeController: ObservableObject {
         // Keep the current refresh rate when the new resolution offers it. Tolerant match:
         // CG reports fractional rates (59.94) where the CGS-surfaced modes carry whole Hz.
         let target = currentMode.flatMap { cur in
-            group.modes.first { ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate) }
+            group.modes.first {
+                $0.isVariableRefresh == cur.isVariableRefresh
+                    && ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate)
+            } ?? group.modes.first { ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate) }
         } ?? group.bestMode
         pendingResolutionID = group.id
         switchTo(target) { self.pendingResolutionID = nil }
@@ -408,6 +411,7 @@ final class DisplayModeController: ObservableObject {
         let mode = currentMode.flatMap { cur in
             display.availableModes.first {
                 $0.isHiDPI == target.isHiDPI && $0.width == target.width && $0.height == target.height &&
+                $0.isVariableRefresh == cur.isVariableRefresh &&
                 ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate)
             }
         } ?? target

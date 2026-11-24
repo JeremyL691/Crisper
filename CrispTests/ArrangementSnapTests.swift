@@ -72,4 +72,12 @@ final class ArrangementSnapTests: XCTestCase {
         XCTAssertNil(result.centerGuide)
         XCTAssertEqual(result.rect, below)
     }
+
+    func testAdjacentEdgeWinsOverCloserEdgeOfNonOverlappingDisplay() {
+        let left = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let above = CGRect(x: 510, y: -600, width: 500, height: 600)
+        let dragged = CGRect(x: 1008, y: 100, width: 500, height: 500)
+        let result = ArrangementSnap.snapped(dragged, others: [left, above], edgeThreshold: 20, centerThreshold: 20)
+        XCTAssertEqual(result.rect.minX, left.maxX)
+    }
 }

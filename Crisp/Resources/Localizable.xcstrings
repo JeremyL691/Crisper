@@ -1,6 +1,102 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Could not save presets. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存预设，请重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法儲存預設，請再試一次。"
+          }
+        }
+      }
+    },
+    "Could not switch the display back to its Mac input. Try reconnecting again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法将显示器切回 Mac 的输入源，请尝试重新连接。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法將顯示器切回 Mac 的輸入來源，請嘗試重新連線。"
+          }
+        }
+      }
+    },
+    "The bundled command line tool is unavailable." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用内的命令行工具不可用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App 內的命令列工具無法使用。"
+          }
+        }
+      }
+    },
+    "Something already exists at /usr/local/bin/crisperctl." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "/usr/local/bin/crisperctl 已有文件或链接。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "/usr/local/bin/crisperctl 已有檔案或連結。"
+          }
+        }
+      }
+    },
+    "The existing display override could not be read safely." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法安全读取现有显示器覆盖配置。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法安全讀取現有顯示器覆寫設定。"
+          }
+        }
+      }
+    },
+    "The existing display override is not managed by Crisper." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现有显示器覆盖配置不由 Crisper 管理。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "現有顯示器覆寫設定不由 Crisper 管理。"
+          }
+        }
+      }
+    },
     "" : {},
     "%@" : {
       "shouldTranslate" : false

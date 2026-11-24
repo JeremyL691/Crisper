@@ -9,46 +9,63 @@ enum CrispctlInstaller {
     static let linkPath = "/usr/local/bin/crisperctl"
     static let bundledPath = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/crisperctl").path
 
-    /// False on a dev build (dev.sh swaps the app binary only) and while the app
-    /// runs translocated from a DMG or Downloads, where the bundle path is a
-    /// temporary mount and a link to it would dangle on the next launch.
+    /// A translocated app has a temporary bundle path that would leave a dangling link.
     static var isAvailable: Bool {
         validatedBundledPath() != nil
     }
 
-    /// The link must point at this bundle: a moved app offers the install again.
+    /// Only a link pointing to this bundle is managed here.
     static var isInstalled: Bool {
         guard let resolved = validatedBundledPath() else { return false }
         let target = try? FileManager.default.destinationOfSymbolicLink(atPath: linkPath)
         return target == resolved || target == bundledPath
     }
 
-    static func install() {
+    @discardableResult
+    static func install() -> String? {
         guard let safeTarget = validatedBundledPath() else {
             log.error("crisperctl install refused: bundled binary path failed safety checks")
-            return
+            return String(localized: "The bundled command line tool is unavailable.")
         }
+        if isInstalled { return nil }
         // Try unprivileged first (VS Code's shell command install does the same): works
         // where /usr/local/bin belongs to the user, e.g. Intel Macs with Homebrew.
-        let fm = FileManager.default
-        if (try? fm.destinationOfSymbolicLink(atPath: linkPath)) != nil { try? fm.removeItem(atPath: linkPath) }
-        if (try? fm.createSymbolicLink(atPath: linkPath, withDestinationPath: safeTarget)) != nil { return }
+        if symlink(safeTarget, linkPath) == 0 { return nil }
+        if errno == EEXIST {
+            return String(localized: "Something already exists at /usr/local/bin/crisperctl.")
+        }
 
-        // HiDPIService.executePrivilegedCommand escapes for AppleScript internally; only single-quote for sh.
-        let shellPath = safeTarget.replacingOccurrences(of: "'", with: "'\\''")
-        let command = "/bin/mkdir -p /usr/local/bin && /bin/ln -sfn '\(shellPath)' '\(linkPath)'"
+        // With the directory as the destination, ln uses the tool's basename and
+        // the symlink syscall fails if an entry of any kind already exists there.
+        let command = """
+        /bin/mkdir -p /usr/local/bin &&
+        /bin/ln -sh \(shellQuote(safeTarget)) /usr/local/bin/
+        """
         if let error = HiDPIService.shared.executePrivilegedCommand(command) {
             log.error("crisperctl install failed: \(error, privacy: .public)")
+            return error
         }
+        return nil
     }
 
-    /// Removes the link; a regular file at that path is not ours and is left alone.
-    static func uninstall() {
-        guard (try? FileManager.default.destinationOfSymbolicLink(atPath: linkPath)) != nil else { return }
-        if (try? FileManager.default.removeItem(atPath: linkPath)) != nil { return }
-        if let error = HiDPIService.shared.executePrivilegedCommand("/bin/rm -f '\(linkPath)'") {
+    @discardableResult
+    static func uninstall() -> String? {
+        guard isInstalled, let resolved = validatedBundledPath() else { return nil }
+        if unlink(linkPath) == 0 { return nil }
+        let command = """
+        destination=$(/usr/bin/readlink '\(linkPath)') &&
+        { [ "$destination" = \(shellQuote(resolved)) ] || [ "$destination" = \(shellQuote(bundledPath)) ]; } &&
+        /bin/rm -f '\(linkPath)'
+        """
+        if let error = HiDPIService.shared.executePrivilegedCommand(command) {
             log.error("crisperctl uninstall failed: \(error, privacy: .public)")
+            return error
         }
+        return nil
+    }
+
+    private static func shellQuote(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Ensures the bundled CLI binary is a non-translocated regular executable inside a safe,

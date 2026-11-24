@@ -10,47 +10,42 @@ struct ExtraBrightnessView: View {
     /// Plain form switch for Advanced Settings instead of the panel row.
     var inForm = false
     @State private var isOn: Bool = false
-    /// Guards the onChange handler while we set isOn programmatically
-    /// (initial sync, revert on failure), so those writes do not re-trigger
-    /// the service.
-    @State private var isProgrammaticChange = false
+    @State private var request: UUID?
 
     var body: some View {
         if BrightnessBoostService.shared.isEligible(display) {
             SettingSwitchRow(inForm: inForm, icon: "sun.max.fill", color: .yellow,
-                             label: "Extra Brightness", isOn: $isOn)
-            .onChange(of: isOn) { _, newValue in
-                guard !isProgrammaticChange else { return }
+                             label: "Extra Brightness", isOn: Binding(get: { isOn }, set: { newValue in
+                isOn = newValue
+                let token = UUID()
+                request = token
                 Task { @MainActor in
-                    let ok = await BrightnessBoostService.shared.setEnabled(newValue, for: display)
-                    if !ok {
-                        // Quiet revert, per the spec: no dialogs.
-                        isProgrammaticChange = true
-                        isOn = false
-                        isProgrammaticChange = false
+                    guard request == token else { return }
+                    _ = await BrightnessBoostService.shared.setEnabled(newValue, for: display)
+                    if request == token {
+                        request = nil
+                        isOn = BrightnessBoostService.shared.isEnabled(for: display)
                     }
                 }
-            }
+            }))
             .onAppear {
-                isProgrammaticChange = true
-                isOn = BrightnessBoostService.shared.isEnabled(for: display)
-                isProgrammaticChange = false
+                syncIfIdle()
             }
             // The service can silently disable boost (BrightnessBoostService.headroomLossPolls).
             // Re-read on every panel open so the toggle doesn't go stale.
             .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidOpen)) { _ in
-                isProgrammaticChange = true
-                isOn = BrightnessBoostService.shared.isEnabled(for: display)
-                isProgrammaticChange = false
+                syncIfIdle()
             }
             // Catches the same auto-disable while the panel stays open, once
             // maxBrightness collapses back to 100.
             .onChange(of: display.maxBrightness) { _, newValue in
-                guard isOn, newValue <= 100.5, !BrightnessBoostService.shared.isEnabled(for: display) else { return }
-                isProgrammaticChange = true
-                isOn = false
-                isProgrammaticChange = false
+                if newValue <= 100.5 { syncIfIdle() }
             }
         }
+    }
+
+    private func syncIfIdle() {
+        guard request == nil else { return }
+        isOn = BrightnessBoostService.shared.isEnabled(for: display)
     }
 }

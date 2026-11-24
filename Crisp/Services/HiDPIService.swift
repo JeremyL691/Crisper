@@ -42,7 +42,7 @@ final class HiDPIService: @unchecked Sendable {
                          nativeWidth: nativeWidth, nativeHeight: nativeHeight)
     }
 
-    /// Disables HiDPI for an external display by removing the plist override.
+    /// Disables HiDPI for an external display by removing Crisper's added modes.
     func disableHiDPI(for displayID: CGDirectDisplayID,
                       vendor: UInt32,
                       product: UInt32) -> String? {
@@ -122,7 +122,9 @@ final class HiDPIService: @unchecked Sendable {
     private func writeScaledModesPlist(vendor: UInt32, product: UInt32, scaledModes: [Data]) -> String? {
         let command: String
         do {
-            command = try HiDPIOverrideCommand.install(vendor: vendor, product: product, scaledModes: scaledModes)
+            let previous = try readOverride(vendor: vendor, product: product)
+            command = try HiDPIOverrideCommand.install(
+                vendor: vendor, product: product, scaledModes: scaledModes, previous: previous)
         } catch {
             return "Failed to generate override: \(error.localizedDescription)"
         }
@@ -136,14 +138,13 @@ final class HiDPIService: @unchecked Sendable {
     }
 
     private func disableHiDPIPlist(vendor: UInt32, product: UInt32) -> String? {
-        let plistPath = overridePlistURL(vendor: vendor, product: product).path
-        guard FileManager.default.fileExists(atPath: plistPath) else { return nil }
-
-        let escapedPath = plistPath.replacingOccurrences(of: "'", with: "'\\''")
-        if let err = executePrivilegedCommand("/bin/rm -f '\(escapedPath)'") {
-            return err
+        do {
+            guard let previous = try readOverride(vendor: vendor, product: product) else { return nil }
+            let command = try HiDPIOverrideCommand.uninstall(vendor: vendor, product: product, previous: previous)
+            return executePrivilegedCommand(command)
+        } catch {
+            return error.localizedDescription
         }
-        return nil
     }
 
     // MARK: - Helpers
@@ -235,9 +236,20 @@ final class HiDPIService: @unchecked Sendable {
             .appendingPathComponent(String(format: "DisplayProductID-%x", product))
     }
 
-    /// True when the on-disk override plist's scale-resolutions already equals `scaledModes`
-    /// (order-independent). Lets callers skip the privileged rewrite, and its admin prompt,
-    /// when nothing would change. Reading /Library/Displays needs no privileges.
+    private func readOverride(vendor: UInt32, product: UInt32) throws -> Data? {
+        let url = overridePlistURL(vendor: vendor, product: product)
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw CocoaError(.fileReadUnsupportedScheme)
+            }
+            return try Data(contentsOf: url)
+        } catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile {
+            return nil
+        }
+    }
+
+    /// True when all the requested modes are already installed.
     private func overridePlistMatches(vendor: UInt32, product: UInt32, scaledModes: [Data]) -> Bool {
         let url = overridePlistURL(vendor: vendor, product: product)
         guard let data = try? Data(contentsOf: url),
@@ -245,7 +257,7 @@ final class HiDPIService: @unchecked Sendable {
               let dict = obj as? [String: Any],
               let existing = dict["scale-resolutions"] as? [Data]
         else { return false }
-        return Set(existing) == Set(scaledModes)
+        return Set(scaledModes).isSubset(of: Set(existing))
     }
 
     private func generateScaledModes(nativeWidth: Int, nativeHeight: Int) -> [Data] {

@@ -26,13 +26,17 @@ enum ArrangementSnap {
         var bestDY = CGFloat.infinity
         var partnerY: CGRect?
         for o in others {
-            for dx in [o.maxX - r.minX, o.minX - r.maxX] where abs(dx) < abs(bestDX) {
-                bestDX = dx
-                partnerX = o
+            if r.minY < o.maxY, o.minY < r.maxY {
+                for dx in [o.maxX - r.minX, o.minX - r.maxX] where abs(dx) < abs(bestDX) {
+                    bestDX = dx
+                    partnerX = o
+                }
             }
-            for dy in [o.maxY - r.minY, o.minY - r.maxY] where abs(dy) < abs(bestDY) {
-                bestDY = dy
-                partnerY = o
+            if r.minX < o.maxX, o.minX < r.maxX {
+                for dy in [o.maxY - r.minY, o.minY - r.maxY] where abs(dy) < abs(bestDY) {
+                    bestDY = dy
+                    partnerY = o
+                }
             }
         }
         let canX = abs(bestDX) <= edgeThreshold

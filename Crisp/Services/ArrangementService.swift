@@ -13,6 +13,8 @@ class ArrangementService {
     /// Used by preset restore, which writes each display's saved absolute origin.
     @discardableResult
     func setPosition(x: Int, y: Int, for displayID: CGDirectDisplayID) async -> Bool {
+        // A mirrored target has no independent position in a preset.
+        guard CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay else { return true }
         PresetService.shared.noteManualChange()
         return await applyOrigins([(displayID, x, y)])
     }
@@ -26,19 +28,17 @@ class ArrangementService {
                      among displays: [DisplayInfo]) async -> Bool {
         PresetService.shared.noteManualChange()
 
-        // Proposed origins: everyone keeps their spot except the dragged display.
-        var origins: [(id: CGDirectDisplayID, x: Int, y: Int)] = displays.map { d in
-            d.displayID == displayID
-                ? (d.displayID, x, y)
-                : (d.displayID, Int(d.bounds.origin.x), Int(d.bounds.origin.y))
+        // Move a mirror group by its source, even when that source is a hidden HiDPI virtual.
+        let sourceID = Self.arrangementID(for: displayID)
+        var origins = Self.arrangementIDs(displays).map { id in
+            let origin = CGDisplayBounds(id).origin
+            return id == sourceID ? (id, x, y) : (id, Int(origin.x), Int(origin.y))
         }
         // Renormalize so the current main sits at (0, 0). When the main is the
         // dragged display, this pushes its offset onto all the others.
-        if let mainID = displays.first(where: { $0.isMain })?.displayID,
-           let main = origins.first(where: { $0.id == mainID }),
-           main.x != 0 || main.y != 0 {
-            let dx = main.x, dy = main.y
-            origins = origins.map { ($0.id, $0.x - dx, $0.y - dy) }
+        let mainID = Self.arrangementID(for: CGMainDisplayID())
+        if let main = origins.first(where: { $0.0 == mainID }), main.1 != 0 || main.2 != 0 {
+            origins = origins.map { ($0.0, $0.1 - main.1, $0.2 - main.2) }
         }
         return await applyOrigins(origins)
     }
@@ -48,18 +48,27 @@ class ArrangementService {
     /// target and old-main origins (the previous approach) could overlap a wider display.
     @discardableResult
     func setAsMainDisplay(_ targetID: CGDirectDisplayID, among displays: [DisplayInfo]) async -> Bool {
-        guard let target = displays.first(where: { $0.displayID == targetID }),
-              !target.isMain else {
-            return false
-        }
+        let sourceID = Self.arrangementID(for: targetID)
+        let ids = Self.arrangementIDs(displays)
+        guard ids.contains(sourceID), sourceID != Self.arrangementID(for: CGMainDisplayID()) else { return false }
         PresetService.shared.noteManualChange()
 
-        let dx = Int(target.bounds.origin.x)
-        let dy = Int(target.bounds.origin.y)
-        let origins: [(id: CGDirectDisplayID, x: Int, y: Int)] = displays.map {
-            ($0.displayID, Int($0.bounds.origin.x) - dx, Int($0.bounds.origin.y) - dy)
+        let target = CGDisplayBounds(sourceID).origin
+        let origins = ids.map { id in
+            let origin = CGDisplayBounds(id).origin
+            return (id, Int(origin.x) - Int(target.x), Int(origin.y) - Int(target.y))
         }
         return await applyOrigins(origins)
+    }
+
+    private static func arrangementID(for id: CGDirectDisplayID) -> CGDirectDisplayID {
+        let source = CGDisplayMirrorsDisplay(id)
+        return source == kCGNullDirectDisplay ? id : source
+    }
+
+    private static func arrangementIDs(_ displays: [DisplayInfo]) -> [CGDirectDisplayID] {
+        var seen = Set<CGDirectDisplayID>()
+        return displays.map { arrangementID(for: $0.displayID) }.filter { seen.insert($0).inserted }
     }
 
     /// Applies origins in one atomic transaction inside `CGHelpers.runWithTimeout` so
@@ -72,14 +81,14 @@ class ArrangementService {
             guard CGBeginDisplayConfiguration(&config) == .success,
                   let cfg = config else { return false }
             for o in origins {
-                CGConfigureDisplayOrigin(cfg, o.id, Int32(o.x), Int32(o.y))
+                guard CGDisplayMirrorsDisplay(o.id) == kCGNullDirectDisplay,
+                      let x = Int32(exactly: o.x), let y = Int32(exactly: o.y),
+                      CGConfigureDisplayOrigin(cfg, o.id, x, y) == .success else {
+                    CGCancelDisplayConfiguration(cfg)
+                    return false
+                }
             }
-            let result = CGCompleteDisplayConfiguration(cfg, .permanently)
-            if result != .success {
-                CGCancelDisplayConfiguration(cfg)
-                return false
-            }
-            return true
+            return CGCompleteDisplayConfiguration(cfg, .permanently) == .success
         }
     }
 }

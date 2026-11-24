@@ -760,31 +760,36 @@ final class DDCService: ObservableObject, @unchecked Sendable {
         return release
     }
 
-    // MARK: - Public Async API (with retry)
+}
 
+// MARK: - Public Async API (with retry)
+
+extension DDCService {
     /// Asynchronously write a VCP value, retrying up to 3 times.
     /// Invalidates the cache for the written VCP code on success.
     func writeAsync(
         displayID: CGDirectDisplayID,
         command: UInt8,
         value: UInt16,
-        completion: (@Sendable (Bool) -> Void)? = nil
+        isCurrent: @escaping @Sendable () -> Bool = { true },
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         operationQueues.queue(for: displayID).async {
             for attempt in 0..<3 {
+                guard isCurrent() else { completion(false); return }
                 if self.writeSynchronous(displayID: displayID, command: command, value: value) {
                     // Invalidate cached value so next read reflects the new setting.
                     self.cacheLock.lock()
                     self.vcpCache[displayID]?[command] = nil
                     self.cacheLock.unlock()
                     Self.log.debug("write \(Self.hex(command), privacy: .public)=\(value, privacy: .public) display \(displayID, privacy: .public): ok (attempt \(attempt + 1, privacy: .public))")
-                    completion?(true)
+                    completion(true)
                     return
                 }
                 if attempt < 2 { Thread.sleep(forTimeInterval: 0.05) }
             }
             Self.log.error("write \(Self.hex(command), privacy: .public)=\(value, privacy: .public) display \(displayID, privacy: .public): failed all 3 attempts")
-            completion?(false)
+            completion(false)
         }
     }
 
@@ -793,6 +798,7 @@ final class DDCService: ObservableObject, @unchecked Sendable {
     func readAsync(
         displayID: CGDirectDisplayID,
         command: UInt8,
+        isCurrent: @escaping @Sendable () -> Bool = { true },
         completion: @escaping @Sendable ((current: UInt16, max: UInt16)?) -> Void
     ) {
         // Fast path: return cached value if still fresh
@@ -806,7 +812,9 @@ final class DDCService: ObservableObject, @unchecked Sendable {
 
         operationQueues.queue(for: displayID).async {
             for attempt in 0..<3 {
+                guard isCurrent() else { completion(nil); return }
                 if let r = self.readSynchronous(displayID: displayID, command: command) {
+                    guard isCurrent() else { completion(nil); return }
                     self.cacheLock.lock()
                     if self.vcpCache[displayID] == nil { self.vcpCache[displayID] = [:] }
                     self.vcpCache[displayID]![command] = VCPCacheEntry(

@@ -35,6 +35,14 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
             if isEnabled {
                 // Pin offsets from the current levels so enabling holds them (no snap).
                 needsRebaseline = true
+                if relativeMode, !isLoadingPrefs, !isPausedForSleep,
+                   let baseline = readBuiltinBrightness() {
+                    for display in DisplayManagerAccessor.shared.displays where !display.isBuiltin {
+                        offsets[display.displayID] = display.brightness - baseline * 100
+                    }
+                    lastAppliedBrightness = baseline
+                    needsRebaseline = false
+                }
                 startPolling()
             } else {
                 stopPolling()
@@ -272,6 +280,7 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
 
     @MainActor
     private func applyBrightness(builtin: Double?, force: Bool = false) async {
+        guard isEnabled, !isPausedForSleep, !Task.isCancelled else { return }
         builtinBrightness = builtin ?? 0
         hasPolled = true
 
@@ -279,9 +288,9 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
         // externals follow the built-in all the way down (#288).
         guard let builtin else { return }
 
-        // Only apply on a >2% built-in change, unless forced (a relative<->absolute
-        // toggle, which must re-aim externals now).
-        guard force || abs(builtin - lastAppliedBrightness) >= 0.02 else { return }
+        // Skip small changes unless offsets need pinning or a mode toggle forces a sync.
+        guard force || (relativeMode && needsRebaseline) ||
+            abs(builtin - lastAppliedBrightness) >= 0.02 else { return }
 
         // Absolute mode: a fresh manual external adjustment wins for 30s
         // (relative mode absorbs it into the offset instead); forced bypasses it.

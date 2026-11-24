@@ -23,6 +23,14 @@ struct KeepAwakeDecision: Equatable, Sendable {
     let shouldHoldAssertion: Bool
 }
 
+/// What made Keep Awake re-evaluate. Power-source notifications also fire for every
+/// battery percentage or time-remaining change, so they are not a reason to light the display.
+enum KeepAwakeEvaluationTrigger: Equatable, Sendable {
+    case control
+    case powerSourceChange
+    case systemWake
+}
+
 enum KeepAwakePolicy {
     static func evaluate(
         config: KeepAwakeConfig,
@@ -41,5 +49,18 @@ enum KeepAwakePolicy {
                 ? KeepAwakeDecision(phase: .active, shouldHoldAssertion: true)
                 : KeepAwakeDecision(phase: .suspendedOnBattery, shouldHoldAssertion: false)
         }
+    }
+
+    /// Declares user activity (which powers the display on) only when assertions come back
+    /// after a battery suspension, or on a system wake while on AC.
+    static func shouldDeclareUserActivity(
+        previousPhase: KeepAwakePhase,
+        decision: KeepAwakeDecision,
+        isOnACPower: Bool,
+        trigger: KeepAwakeEvaluationTrigger
+    ) -> Bool {
+        guard decision.shouldHoldAssertion, decision.phase == .active else { return false }
+        if previousPhase == .suspendedOnBattery { return true }
+        return trigger == .systemWake && isOnACPower
     }
 }

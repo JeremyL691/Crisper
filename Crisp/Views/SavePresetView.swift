@@ -8,6 +8,7 @@ import CoreGraphics
 /// is replaced by a bounded card with its own Cancel / Save buttons.
 struct SavePresetView: View {
     @Binding var isShowingForm: Bool
+    @ObservedObject private var presets = PresetService.shared
     @State private var isHovered = false
     @FocusState private var nameFocused: Bool
 
@@ -47,6 +48,12 @@ struct SavePresetView: View {
                 .menuRowHover(isHovered)
                 .onHover { isHovered = $0 }
                 .transition(.opacity)
+            }
+            if !isShowingForm, let error = presets.operationError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
             }
         }
         // Collapse the form when the panel closes so it reopens fresh (fires while hidden).
@@ -346,46 +353,38 @@ struct SavePresetForm: View {
         let name = presetName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, !nothingSelected else { return }
 
-        // Stop recording first: commitShortcut re-syncs hotkeys, a no-op while suspended.
+        // Stop recording first: saving re-syncs hotkeys, a no-op while suspended.
         NotificationCenter.default.post(name: .crispStopShortcutRecording, object: nil)
 
         isSaving = true
         saveError = nil
 
+        let captures = Set([
+            (PresetCapture.resolution, includeResolution), (.brightness, includeBrightness),
+            (.arrangement, includeArrangement), (.imageAdjustment, includeImageAdjustment),
+            (.hdr, includeHDR), (.connection, includeConnection), (.color, includeColor)
+        ].filter(\.1).map(\.0))
+        let saved: Bool
         if let editing {
             // Preserves stored values for captures left unchanged.
-            PresetService.shared.editPreset(
+            saved = PresetService.shared.editPreset(
                 id: editing.id, name: name, icon: selectedIcon, colorName: selectedColor,
-                captures: Set([(PresetCapture.resolution, includeResolution),
-                               (.brightness, includeBrightness),
-                               (.arrangement, includeArrangement),
-                               (.imageAdjustment, includeImageAdjustment),
-                               (.hdr, includeHDR),
-                               (.connection, includeConnection),
-                               (.color, includeColor)].filter(\.1).map(\.0))
+                captures: captures, recapture: recaptureValues, shortcut: recordedShortcut
             )
-            // Opt-in: refresh the stored values to the current display state.
-            if recaptureValues {
-                PresetService.shared.updatePreset(id: editing.id)
-            }
-            PresetService.shared.commitShortcut(recordedShortcut, forPresetID: editing.id)
         } else {
             var preset = PresetService.shared.captureCurrentState(
-                name: name, icon: selectedIcon,
-                includeResolution: includeResolution,
-                includeBrightness: includeBrightness,
-                includeArrangement: includeArrangement,
-                includeImageAdjustment: includeImageAdjustment,
-                includeHDR: includeHDR,
-                includeConnection: includeConnection,
-                includeColor: includeColor
+                name: name, icon: selectedIcon, captures: captures
             )
             preset.colorName = selectedColor
-            PresetService.shared.addPreset(preset)
-            PresetService.shared.commitShortcut(recordedShortcut, forPresetID: preset.id)
+            preset.shortcut = recordedShortcut
+            saved = PresetService.shared.addPreset(preset)
         }
 
         isSaving = false
+        guard saved else {
+            saveError = PresetService.shared.operationError ?? String(localized: "Could not save presets. Try again.")
+            return
+        }
         onClose()
     }
 }

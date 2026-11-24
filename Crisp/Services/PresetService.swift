@@ -8,9 +8,10 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     static let shared = PresetService()
     private static let log = Logger(subsystem: "com.crisp.app", category: "preset")
 
-    @Published var presets: [DisplayPreset] = []
+    @Published private(set) var presets: [DisplayPreset] = []
     @Published var isApplying: Bool = false
     @Published var applyingPresetID: UUID? = nil
+    @Published private(set) var operationError: String?
 
     /// Preset the user last applied. Shown as checked in the UI until any manual
     /// brightness/resolution/arrangement change invalidates it. Session-only.
@@ -37,107 +38,119 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
     // MARK: - Persistence
 
-    func loadPresets() {
+    private func loadPresets() {
         presets = SettingsService.shared.load([DisplayPreset].self, filename: filename) ?? []
     }
 
-    func savePresets() {
-        SettingsService.shared.save(presets, filename: filename)
-        // Shortcuts live on presets, so any preset change may add/remove/steal one.
-        HotkeyService.shared.syncRegistrations()
+    private func storePresets(_ updated: [DisplayPreset]) -> Bool {
+        do {
+            try SettingsService.shared.save(updated, filename: filename)
+        } catch {
+            Self.log.error("Could not save presets: \(error.localizedDescription, privacy: .public)")
+            operationError = String(localized: "Could not save presets. Try again.")
+            return false
+        }
+        presets = updated
+        operationError = nil
+        return true
     }
 
     // MARK: - CRUD
 
-    func addPreset(_ preset: DisplayPreset) {
-        presets.append(preset)
-        savePresets()
+    func addPreset(_ preset: DisplayPreset) -> Bool {
+        storePreset(preset, replacing: nil)
     }
 
-    func deletePreset(id: UUID) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
-        presets.remove(at: index)
+    @discardableResult
+    func deletePreset(id: UUID) -> Bool {
+        guard applyingPresetID != id else { return false }
+        guard let index = presets.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = presets
+        updated.remove(at: index)
+        guard storePresets(updated) else { return false }
         if activePresetID == id { activePresetID = nil }
-        savePresets()
+        HotkeyService.shared.syncRegistrations()
+        return true
     }
 
     // MARK: - Shortcuts (issue #61)
 
-    /// Sets a preset's shortcut, stealing the combo from every other holder
-    /// (other presets and the static Toggle HiDPI action): last save wins.
-    func commitShortcut(_ shortcut: KeyboardShortcut?, forPresetID id: UUID) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
-        if let shortcut {
-            for i in presets.indices where presets[i].id != id
-                && presets[i].shortcut?.sameKeys(as: shortcut) == true {
-                presets[i].shortcut = nil
-            }
-            if SettingsService.shared.hidpiShortcut?.sameKeys(as: shortcut) == true {
-                SettingsService.shared.hidpiShortcut = nil
+    private func storePreset(_ preset: DisplayPreset, replacing index: Int?) -> Bool {
+        var updated = presets
+        if let shortcut = preset.shortcut {
+            for i in updated.indices where i != index && updated[i].shortcut?.sameKeys(as: shortcut) == true {
+                updated[i].shortcut = nil
             }
         }
-        presets[index].shortcut = shortcut
-        savePresets()
+        if let index {
+            updated[index] = preset
+        } else {
+            updated.append(preset)
+        }
+        guard storePresets(updated) else { return false }
+        if let shortcut = preset.shortcut { SettingsService.shared.clearStaticShortcuts(matching: shortcut) }
+        HotkeyService.shared.syncRegistrations()
+        return true
     }
 
-    /// The static Toggle HiDPI action recorded a combo: steal it from any preset
-    /// holding it, then re-register. Call after storing the new static combo.
-    func stealShortcutFromPresets(_ shortcut: KeyboardShortcut) {
-        var changed = false
-        for i in presets.indices where presets[i].shortcut?.sameKeys(as: shortcut) == true {
-            presets[i].shortcut = nil
-            changed = true
-        }
-        if changed {
-            savePresets()  // persists and syncs
-        } else {
-            HotkeyService.shared.syncRegistrations()  // still need the new static hotkey
-        }
+    func releaseShortcut(_ shortcut: KeyboardShortcut) -> Bool {
+        let conflicting = presets.indices.filter { presets[$0].shortcut?.sameKeys(as: shortcut) == true }
+        guard !conflicting.isEmpty else { return true }
+        var updated = presets
+        for i in conflicting { updated[i].shortcut = nil }
+        return storePresets(updated)
     }
 
     /// Overwrites a user preset with the current display state (name, icon, and
     /// which attributes it controls are kept).
-    func updatePreset(id: UUID) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
-        let existing = presets[index]
-        let captured = captureCurrentState(
-            name: existing.name, icon: existing.icon,
-            includeResolution: existing.includesResolution,
-            includeBrightness: existing.includesBrightness,
-            includeArrangement: existing.includesArrangement,
-            includeImageAdjustment: existing.includesImageAdjustment,
-            includeHDR: existing.includesHDR,
-            includeConnection: existing.includesConnection,
-            includeColor: existing.includesColor
-        )
-        presets[index].displays = captured.displays
-        savePresets()
+    @discardableResult
+    func updatePreset(id: UUID) -> Bool {
+        guard applyingPresetID != id else { return false }
+        guard let index = presets.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = presets
+        let captures = Set(PresetCapture.allCases.filter { updated[index].includes($0) })
+        updated[index].displays = captureDisplays(captures)
+        guard storePresets(updated) else { return false }
         // The preset now matches the current state by definition.
         activePresetID = id
+        return true
     }
 
     /// Identity (name/icon/color) updates directly; a capture is only dropped or
     /// re-captured when its inclusion actually changed, so captures left alone keep
     /// their stored values across a rename.
     func editPreset(id: UUID, name: String, icon: String, colorName: String?,
-                    captures: Set<PresetCapture>) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
-        presets[index].name = name
-        presets[index].icon = icon
-        presets[index].colorName = colorName
-        savePresets()
-        for capture in PresetCapture.allCases
-        where presets[index].includes(capture) != captures.contains(capture) {
-            setCapture(id: id, capture, included: captures.contains(capture))
+                    captures: Set<PresetCapture>, recapture: Bool, shortcut: KeyboardShortcut?) -> Bool {
+        operationError = nil
+        guard applyingPresetID != id else { return false }
+        guard let index = presets.firstIndex(where: { $0.id == id }) else { return false }
+        var preset = presets[index]
+        preset.name = name
+        preset.icon = icon
+        preset.colorName = colorName
+        preset.shortcut = shortcut
+        let changed = PresetCapture.allCases.filter { preset.includes($0) != captures.contains($0) }
+        if recapture {
+            preset.displays = captureDisplays(captures)
+        } else {
+            for capture in changed {
+                setCapture(capture, included: captures.contains(capture), in: &preset)
+            }
         }
+        guard storePreset(preset, replacing: index) else { return false }
+        if recapture {
+            activePresetID = id
+        } else if !changed.isEmpty, activePresetID == id {
+            activePresetID = nil
+        }
+        return true
     }
 
     /// Turning a capture off drops its stored value (nil, so apply skips it); turning it
     /// back on re-captures the live value. An offline display can't be re-captured.
-    func setCapture(id: UUID, _ capture: PresetCapture, included: Bool) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
+    private func setCapture(_ capture: PresetCapture, included: Bool, in preset: inout DisplayPreset) {
         let displays = DisplayManagerAccessor.shared.displays
-        presets[index].displays = presets[index].displays.map { entry in
+        preset.displays = preset.displays.map { entry in
             var e = entry
             guard included else {
                 e.clear(capture)
@@ -174,29 +187,33 @@ final class PresetService: ObservableObject, @unchecked Sendable {
             return e
         }
         if capture == .connection, included {
-            presets[index].displays += offEntries(excluding: presets[index].displays)
+            preset.displays += offEntries(excluding: preset.displays)
         }
-        savePresets()
-        // What the preset controls changed; it no longer cleanly represents the
-        // last-applied state.
-        if activePresetID == id { activePresetID = nil }
     }
 
     // MARK: - Apply
 
     /// Applies a preset: for each entry, finds the matching display and applies settings.
-    func applyPreset(_ preset: DisplayPreset) async {
-        guard !isApplying else { return }
+    @discardableResult
+    func applyPreset(_ preset: DisplayPreset) async -> Bool {
+        guard !isApplying else { return false }
         isApplying = true
         applyingPresetID = preset.id
+        activePresetID = nil
+        operationError = nil
         defer {
             isApplying = false
             applyingPresetID = nil
         }
 
-        guard let displays = await applyConnection(of: preset) else {
+        let displays: [DisplayInfo]
+        do {
+            displays = try await applyConnection(of: preset).get()
+        } catch {
             activePresetID = nil
-            return
+            operationError = error.description
+            Self.log.error("Could not apply preset connections: \(error.description, privacy: .public)")
+            return false
         }
 
         for entry in preset.displays {
@@ -283,7 +300,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
 
         await applyVirtualRefreshRates(of: preset, displays: displays)
         activePresetID = preset.id
-        // DisplayManager is not a singleton; callers with a DisplayManager ref can call refreshDisplays().
+        return true
     }
 
     private func applyVirtualRefreshRates(of preset: DisplayPreset, displays: [DisplayInfo]) async {
@@ -300,32 +317,51 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     /// Turns displays on and off before the other settings (#211), so those land on the
     /// display set the preset was saved with. Returns the display list after the change.
     /// Smart Dummy is autonomous (Auto-Yield + AC-only), so applying a preset never toggles it.
-    private func applyConnection(of preset: DisplayPreset) async -> [DisplayInfo]? {
+    private func applyConnection(of preset: DisplayPreset) async -> Result<[DisplayInfo], PhysicalDisplayToggleService.ToggleError> {
         let toggle = PhysicalDisplayToggleService.shared
         let virtual = VirtualDisplayService.shared
-        let virtualUUIDs = Set(virtual.configs.map(\.displayUUID))
+        let virtualUUIDs = Set(virtual.configs.map { CrispVirtualDisplayIdentity.canonicalUUID($0.displayUUID) })
         let displays = DisplayManagerAccessor.shared.displays
         let plan = preset.connectionPlan(
             online: Set(displays.filter { $0.isOnline && !virtual.isVirtualDisplay($0.displayID) }.map(\.presetUUID)),
             disconnected: Set(toggle.disconnected.map(\.uuid))
         )
-        // Reconnects first, so a swap never trips the last-screen guard.
-        for uuid in plan.reconnect where !virtualUUIDs.contains(uuid) {
-            _ = await InputSwitchService.shared.reconnect(uuid: uuid)
+        let reconnect = plan.reconnect.filter { !virtualUUIDs.contains($0) }
+        let disconnect = plan.disconnect.filter { !virtualUUIDs.contains($0) }
+        // An unsuccessful reconnect must not be followed by disconnecting the fallback screen.
+        for uuid in reconnect {
+            let storedUUID = toggle.disconnected.first {
+                CrispVirtualDisplayIdentity.canonicalUUID($0.uuid) == uuid
+            }?.uuid ?? uuid
+            if case .failure(let error) = await InputSwitchService.shared.reconnect(uuid: storedUUID) {
+                toggle.displayManager?.refreshDisplays()
+                return .failure(error)
+            }
         }
-        for uuid in plan.disconnect where !virtualUUIDs.contains(uuid) {
-            guard let display = displays.first(where: { $0.displayUUID == uuid }) else { continue }
-            // A refusal (last active display) leaves it on; the other settings still apply.
-            _ = await toggle.disconnect(display, fromPreset: true)
+        if !reconnect.isEmpty {
+            toggle.displayManager?.refreshDisplays()
+            let online = Set(DisplayManagerAccessor.shared.displays.filter(\.isOnline).map {
+                CrispVirtualDisplayIdentity.canonicalUUID($0.displayUUID)
+            })
+            guard Set(reconnect).isSubset(of: online) else { return .failure(.displayNotFound) }
+        }
+        for uuid in disconnect {
+            guard let display = DisplayManagerAccessor.shared.displays.first(where: {
+                CrispVirtualDisplayIdentity.canonicalUUID($0.displayUUID) == uuid && $0.isOnline
+            }) else { return .failure(.displayNotFound) }
+            if case .failure(let error) = await toggle.disconnect(display, fromPreset: true) {
+                toggle.displayManager?.refreshDisplays()
+                return .failure(error)
+            }
         }
         toggle.displayManager?.refreshDisplays()
         let refreshed = DisplayManagerAccessor.shared.displays
         // refreshDisplays loads a returning display's modes in the background; the
         // resolution below needs them now.
-        for display in refreshed where plan.reconnect.contains(display.displayUUID) {
+        for display in refreshed where reconnect.contains(CrispVirtualDisplayIdentity.canonicalUUID(display.displayUUID)) {
             await display.loadDetails()
         }
-        return refreshed
+        return .success(refreshed)
     }
 
     // MARK: - Capture
@@ -333,35 +369,32 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     /// Snapshots all current online displays into a new preset. The include
     /// flags decide which attributes the preset controls; an excluded attribute
     /// is stored as nil and won't be touched on apply.
-    func captureCurrentState(name: String, icon: String,
-                             includeResolution: Bool = true,
-                             includeBrightness: Bool = true,
-                             includeArrangement: Bool = true,
-                             includeImageAdjustment: Bool = false,
-                             includeHDR: Bool = false,
-                             includeConnection: Bool = false,
-                             includeColor: Bool = false) -> DisplayPreset {
+    func captureCurrentState(name: String, icon: String, captures: Set<PresetCapture>) -> DisplayPreset {
+        DisplayPreset(name: name, icon: icon, displays: captureDisplays(captures))
+    }
+
+    private func captureDisplays(_ captures: Set<PresetCapture>) -> [DisplayPresetEntry] {
         let displays = DisplayManagerAccessor.shared.displays
         var entries: [DisplayPresetEntry] = displays.compactMap { display in
             guard display.isOnline else { return nil }
             let mode = display.currentDisplayMode
             return DisplayPresetEntry(
                 displayUUID: display.presetUUID,
-                width: includeResolution ? (mode?.width ?? display.pixelWidth) : nil,
-                height: includeResolution ? (mode?.height ?? display.pixelHeight) : nil,
-                isHiDPI: includeResolution ? (mode?.isHiDPI ?? false) : nil,
-                refreshRate: includeResolution ? mode?.refreshRate : nil,
-                brightness: includeBrightness ? display.brightness / 100.0 : nil,
-                arrangementX: includeArrangement ? display.bounds.origin.x : nil,
-                arrangementY: includeArrangement ? display.bounds.origin.y : nil,
-                imageAdjustment: includeImageAdjustment ? imageAdjustment(of: display) : nil,
-                hdr: includeHDR ? hdr(of: display) : nil,
-                connected: includeConnection ? true : nil,
-                color: includeColor ? color(of: display) : nil
+                width: captures.contains(.resolution) ? (mode?.width ?? display.pixelWidth) : nil,
+                height: captures.contains(.resolution) ? (mode?.height ?? display.pixelHeight) : nil,
+                isHiDPI: captures.contains(.resolution) ? (mode?.isHiDPI ?? false) : nil,
+                refreshRate: captures.contains(.resolution) ? mode?.refreshRate : nil,
+                brightness: captures.contains(.brightness) ? display.brightness / 100.0 : nil,
+                arrangementX: captures.contains(.arrangement) ? display.bounds.origin.x : nil,
+                arrangementY: captures.contains(.arrangement) ? display.bounds.origin.y : nil,
+                imageAdjustment: captures.contains(.imageAdjustment) ? imageAdjustment(of: display) : nil,
+                hdr: captures.contains(.hdr) ? hdr(of: display) : nil,
+                connected: captures.contains(.connection) ? true : nil,
+                color: captures.contains(.color) ? color(of: display) : nil
             )
         }
-        if includeConnection { entries += offEntries(excluding: entries) }
-        return DisplayPreset(name: name, icon: icon, displays: entries)
+        if captures.contains(.connection) { entries += offEntries(excluding: entries) }
+        return entries
     }
 
     /// Physical displays Crisper disconnected, not already in `entries`, store only that they are off.

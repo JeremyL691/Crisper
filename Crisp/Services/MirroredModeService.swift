@@ -60,9 +60,12 @@ final class MirroredModeService: ObservableObject {
             // Re-arm if a wake or WindowServer reset collapsed the mirror set without telling us.
             if CGDisplayMirrorsDisplay(physicalID) != vdID {
                 Self.log.info("apply \(width)x\(height): reused virtual \(vdID), re-arming mirror")
-                return await MirrorService.shared.enableMirror(source: vdID, target: physicalID)
+                guard await MirrorService.shared.enableMirror(source: vdID, target: physicalID) else {
+                    return false
+                }
             }
             Self.log.info("apply \(width)x\(height): reused virtual \(vdID)")
+            remember(width: width, height: height, for: display)
             return true
         }
 
@@ -208,10 +211,11 @@ final class MirroredModeService: ObservableObject {
         for physicalID in active.keys {
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else { continue }
-            CGConfigureDisplayMirrorOfDisplay(cfg, physicalID, kCGNullDirectDisplay)
-            if CGCompleteDisplayConfiguration(cfg, .forSession) != .success {
+            guard CGConfigureDisplayMirrorOfDisplay(cfg, physicalID, kCGNullDirectDisplay) == .success else {
                 CGCancelDisplayConfiguration(cfg)
+                continue
             }
+            CGCompleteDisplayConfiguration(cfg, .forSession)
         }
         active.removeAll()
         activePhysicalIDs.removeAll()

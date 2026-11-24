@@ -98,9 +98,10 @@ enum DDCInputSource {
     /// ("HDMI 1", "hdmi1", "dp2", "usb-c"), a decimal number ("17", as m1ddc takes
     /// it) or a hex number ("0x11"). nil for anything else or for 0.
     static func value(from text: String) -> UInt16? {
-        let compact = text.lowercased().filter { !" -_".contains($0) }
-        if let named = aliases[compact] { return named }
-        let parsed = compact.hasPrefix("0x") ? UInt16(compact.dropFirst(2), radix: 16) : UInt16(compact)
+        let input = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !input.hasPrefix("-") else { return nil }
+        if let named = aliases[input.filter({ !" -_".contains($0) })] { return named }
+        let parsed = input.hasPrefix("0x") ? UInt16(input.dropFirst(2), radix: 16) : UInt16(input)
         guard let parsed, parsed != 0 else { return nil }
         return parsed
     }

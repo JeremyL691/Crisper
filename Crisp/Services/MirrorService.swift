@@ -34,13 +34,11 @@ final class MirrorService: @unchecked Sendable {
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success,
                   let cfg = config else { return false }
-            CGConfigureDisplayMirrorOfDisplay(cfg, target, source)
-            let result = CGCompleteDisplayConfiguration(cfg, .forSession)
-            if result != .success {
+            guard CGConfigureDisplayMirrorOfDisplay(cfg, target, source) == .success else {
                 CGCancelDisplayConfiguration(cfg)
                 return false
             }
-            return true
+            return CGCompleteDisplayConfiguration(cfg, .forSession) == .success
         }
     }
 
@@ -71,13 +69,11 @@ final class MirrorService: @unchecked Sendable {
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success,
                   let cfg = config else { return false }
-            CGConfigureDisplayMirrorOfDisplay(cfg, displayID, kCGNullDirectDisplay)
-            let result = CGCompleteDisplayConfiguration(cfg, .forSession)
-            if result != .success {
+            guard CGConfigureDisplayMirrorOfDisplay(cfg, displayID, kCGNullDirectDisplay) == .success else {
                 CGCancelDisplayConfiguration(cfg)
                 return false
             }
-            return true
+            return CGCompleteDisplayConfiguration(cfg, .forSession) == .success
         }
     }
 }

@@ -1,7 +1,7 @@
 import CoreGraphics
 
-struct DDCOperationGeneration {
-    struct Token: Equatable {
+struct DDCOperationGeneration: Sendable {
+    struct Token: Equatable, Sendable {
         let topology: UInt64
         let request: UInt64
     }

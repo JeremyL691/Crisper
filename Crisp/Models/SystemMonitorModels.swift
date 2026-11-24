@@ -145,6 +145,19 @@ struct DiskSnapshot: Equatable, Sendable {
         totalBytes > usedBytes ? totalBytes - usedBytes : 0
     }
 
+    func withThroughput(readBytesPerSec: Double, writeBytesPerSec: Double) -> DiskSnapshot {
+        DiskSnapshot(
+            name: name,
+            usedBytes: usedBytes,
+            totalBytes: totalBytes,
+            readBytesPerSec: readBytesPerSec,
+            writeBytesPerSec: writeBytesPerSec,
+            temperatureC: temperatureC,
+            volumes: volumes,
+            usedFraction: usedFraction
+        )
+    }
+
     static let empty = DiskSnapshot(
         name: "Macintosh HD",
         usedBytes: 0,
@@ -347,5 +360,24 @@ enum SMCTemperatureCodec {
 
     static func isValidTemperature(_ celsius: Double) -> Bool {
         celsius.isFinite && validTemperatureRange.contains(celsius)
+    }
+}
+
+/// Pairs each reading of a cumulative counter with the one before it, so rates cover only
+/// the interval between two consecutive samples. After `reset()` the next reading only
+/// re-arms the baseline, so no rate ever spans a period in which sampling was paused.
+struct CounterBaseline<Reading: Sendable>: Sendable {
+    private var previous: Reading?
+
+    var isArmed: Bool { previous != nil }
+
+    mutating func advance(to current: Reading) -> (previous: Reading, current: Reading)? {
+        defer { previous = current }
+        guard let previous else { return nil }
+        return (previous, current)
+    }
+
+    mutating func reset() {
+        previous = nil
     }
 }

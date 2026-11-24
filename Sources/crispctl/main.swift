@@ -2,8 +2,9 @@ import Darwin
 import Foundation
 private struct ClientFailure: Error { let message: String }
 /// --json prints the server's reply as it came, for scripts and agents; without it,
-/// text for people (#227). It may stand anywhere among the arguments.
-private let jsonOutput = CommandLine.arguments.contains("--json")
+/// text for people (#227). After --, arguments are literal operands.
+private let invocation = CrispControlCLIModel.parseInvocation(arguments: Array(CommandLine.arguments.dropFirst()))
+private let jsonOutput = invocation.json
 private let controlSocketPath = FileManager.default.temporaryDirectory
     .appendingPathComponent("crisperctl.sock").path
 private func brandForCrisper(_ text: String) -> String {
@@ -131,7 +132,7 @@ private func installSkill(for agent: String) -> Never {
     Darwin.exit(EXIT_SUCCESS)
 }
 let request: CrispControlRequest
-switch CrispControlCLIModel.parse(arguments: CommandLine.arguments.dropFirst().filter { $0 != "--json" }) {
+switch invocation.result {
 case let .request(value): request = value
 case let .help(topic):
     switch topic {

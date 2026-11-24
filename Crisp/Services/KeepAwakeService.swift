@@ -8,7 +8,7 @@ private func keepAwakePowerSourceCallback(_ context: UnsafeMutableRawPointer?) {
     guard let context else { return }
     let service = Unmanaged<KeepAwakeService>.fromOpaque(context).takeUnretainedValue()
     MainActor.assumeIsolated {
-        service.syncForPowerOrWakeEvent(reason: "PowerSourceChange", declareUserActivityOnRestore: true)
+        service.syncForPowerSourceChange()
     }
 }
 
@@ -73,11 +73,11 @@ final class KeepAwakeService: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.syncForPowerOrWakeEvent(reason: "WorkspaceDidWake", declareUserActivityOnRestore: true)
+                self?.syncForSystemWake(reason: "WorkspaceDidWake")
             }
         }
 
-        evaluate(reason: "Startup", declareUserActivityOnRestore: false)
+        evaluate(reason: "Startup")
     }
 
     /// Releases all active assertions and unregisters power/wake monitors without
@@ -101,16 +101,16 @@ final class KeepAwakeService: ObservableObject {
 
     func setEnabled(_ enabled: Bool) {
         if enabled && Self.isDisabledByPolicy {
-            evaluate(reason: "DisabledByPolicy", declareUserActivityOnRestore: false)
+            evaluate(reason: "DisabledByPolicy")
             return
         }
         guard config.isEnabled != enabled else {
-            evaluate(reason: "SetEnabledSync", declareUserActivityOnRestore: false)
+            evaluate(reason: "SetEnabledSync")
             return
         }
         config.isEnabled = enabled
         persistConfig()
-        evaluate(reason: enabled ? "UserEnabled" : "UserDisabled", declareUserActivityOnRestore: false)
+        evaluate(reason: enabled ? "UserEnabled" : "UserDisabled")
     }
 
     func setActive(_ on: Bool) {
@@ -121,27 +121,31 @@ final class KeepAwakeService: ObservableObject {
         guard config.mode != mode else { return }
         config.mode = mode
         persistConfig()
-        evaluate(reason: "ModeChanged", declareUserActivityOnRestore: false)
+        evaluate(reason: "ModeChanged")
     }
 
     func selectMode(_ mode: KeepAwakeMode) {
         if Self.isDisabledByPolicy {
-            evaluate(reason: "DisabledByPolicy", declareUserActivityOnRestore: false)
+            evaluate(reason: "DisabledByPolicy")
             return
         }
         config.mode = mode
         config.isEnabled = true
         persistConfig()
-        evaluate(reason: "ModeSelected", declareUserActivityOnRestore: false)
+        evaluate(reason: "ModeSelected")
     }
 
-    func syncForPowerOrWakeEvent(reason: String, declareUserActivityOnRestore: Bool = true) {
-        evaluate(reason: reason, declareUserActivityOnRestore: declareUserActivityOnRestore)
+    func syncForPowerSourceChange() {
+        evaluate(reason: "PowerSourceChange", trigger: .powerSourceChange)
+    }
+
+    func syncForSystemWake(reason: String) {
+        evaluate(reason: reason, trigger: .systemWake)
     }
 
     // MARK: - Evaluation & Assertions
 
-    private func evaluate(reason: String, declareUserActivityOnRestore: Bool) {
+    private func evaluate(reason: String, trigger: KeepAwakeEvaluationTrigger = .control) {
         let onAC = PowerAndTopologyMonitor.readIsOnACPower()
         isOnACPower = onAC
 
@@ -172,10 +176,12 @@ final class KeepAwakeService: ObservableObject {
             )
             isActive = (displayAssertion != 0 || systemAssertion != 0)
 
-            let resumedFromBattery = (previousPhase == .suspendedOnBattery && decision.phase == .active)
-            let shouldDeclareActivity = resumedFromBattery
-                || (declareUserActivityOnRestore && onAC && decision.phase == .active)
-            if shouldDeclareActivity {
+            if KeepAwakePolicy.shouldDeclareUserActivity(
+                previousPhase: previousPhase,
+                decision: decision,
+                isOnACPower: onAC,
+                trigger: trigger
+            ) {
                 declareWakeUserActivity()
             }
         } else {
