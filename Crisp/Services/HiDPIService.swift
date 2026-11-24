@@ -49,9 +49,10 @@ final class HiDPIService: @unchecked Sendable {
         return disableHiDPIPlist(vendor: vendor, product: product)
     }
 
-    /// Legacy single-path disable (plist only).
-    func disableHiDPI(vendor: UInt32, product: UInt32) -> String? {
-        disableHiDPIPlist(vendor: vendor, product: product)
+    func disableSmoothScaling(vendor: UInt32, product: UInt32,
+                              nativeWidth: Int, nativeHeight: Int) -> String? {
+        let legacyModes = generateSmoothScaledModes(nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+        return disableHiDPIPlist(vendor: vendor, product: product, legacyModes: legacyModes)
     }
 
     /// Refreshes availableModes on the given DisplayInfo after enabling HiDPI.
@@ -137,10 +138,11 @@ final class HiDPIService: @unchecked Sendable {
         return nil
     }
 
-    private func disableHiDPIPlist(vendor: UInt32, product: UInt32) -> String? {
+    private func disableHiDPIPlist(vendor: UInt32, product: UInt32, legacyModes: [Data] = []) -> String? {
         do {
             guard let previous = try readOverride(vendor: vendor, product: product) else { return nil }
-            let command = try HiDPIOverrideCommand.uninstall(vendor: vendor, product: product, previous: previous)
+            let command = try HiDPIOverrideCommand.uninstall(
+                vendor: vendor, product: product, previous: previous, legacyModes: legacyModes)
             return executePrivilegedCommand(command)
         } catch {
             return error.localizedDescription

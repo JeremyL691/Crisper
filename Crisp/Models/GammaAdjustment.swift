@@ -18,6 +18,15 @@ struct GammaAdjustment: Codable, Equatable {
     var isInverted: Bool = false
     var isPaused: Bool = false
 
+    /// Quantizes a clamped sample within the channel's rendered output range.
+    func quantized(_ value: Double, lower: Double, upper: Double) -> Double {
+        guard quantizationLevels < 256, upper > lower else { return value }
+        let levels = Double(max(2, quantizationLevels))
+        let span = upper - lower
+        let bucket = min(levels - 1, floor((value - lower) / span * levels))
+        return lower + bucket / (levels - 1) * span
+    }
+
     /// Every value at neutral (pause does not count): nothing to apply or save.
     var isNeutral: Bool {
         contrast == 0 && gammaVal == 0 && gain == 0 && colorTemperature == 0 &&

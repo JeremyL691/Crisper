@@ -470,8 +470,8 @@ final class PhysicalDisplayToggleService: ObservableObject {
             standDownUntilUndock = true
         }
         if onlineID(for: uuid) == nil {
-            // A saved ID can now belong to an entirely different monitor.
-            guard let targetID = resolveCurrentID(for: record) else { return .failure(.displayNotFound) }
+            guard let targetID = reconnectTarget(for: record, rescuingBlackout: !byUser)
+            else { return .failure(.displayNotFound) }
             Self.log.notice("reconnect requested: \(uuid, privacy: .public) id \(targetID, privacy: .public)")
             let result = await setEnabled(true, displayID: targetID)
             if case .failure(.timedOut) = result, !byUser { watchLateReconnect(uuid) }
@@ -508,7 +508,22 @@ final class PhysicalDisplayToggleService: ObservableObject {
     /// across the full (incl. disabled) display list.
     private func resolveCurrentID(for record: DisconnectedDisplay) -> CGDirectDisplayID? {
         allDisplaysIncludingDisabled().first { uuid(for: $0) == record.uuid }
-    }    /// Safety net for softReconnect's re-enable retries all failing: sweeps every SLS-disabled
+    }
+
+    private func reconnectTarget(for record: DisconnectedDisplay, rescuingBlackout: Bool) -> CGDirectDisplayID? {
+        let enumeratedIDs = allDisplaysIncludingDisabled()
+        if let currentID = enumeratedIDs.first(where: { uuid(for: $0) == record.uuid }) {
+            return currentID
+        }
+        // SkyLight can hide still-attached disabled displays during a blackout. Use
+        // the saved ID only for rescue, and only if it isn't enumerated as another display.
+        guard rescuingBlackout, !screensAsleep, phantomAwareActiveDisplayCount() == 0,
+              !enumeratedIDs.contains(record.displayID), !onlineDisplayIDs().contains(record.displayID)
+        else { return nil }
+        return record.displayID
+    }
+
+    /// Safety net for softReconnect's re-enable retries all failing: sweeps every SLS-disabled
     /// display Crisp didn't disconnect on purpose, so a transient failure can't leave a screen
     /// stuck black. Leaves other apps' intentional disables alone.
     private func reenableUnintentionallyDisabled(includingBlink: String? = nil) async {

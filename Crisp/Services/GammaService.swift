@@ -75,7 +75,7 @@ final class GammaService: @unchecked Sendable {
     func reapply(for displayID: CGDirectDisplayID) {
         let adj = adjustmentsLock.withLock { activeAdjustments[displayID] }
         guard let adj, !adj.isPaused else { return }
-        applyInternal(adj, for: displayID)
+        applyTable(adj, for: displayID)
     }
 
     // MARK: - Public API
@@ -83,15 +83,7 @@ final class GammaService: @unchecked Sendable {
     func apply(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
         guard !adj.isPaused else { return }
         adjustmentsLock.withLock { activeAdjustments[displayID] = adj }
-        applyInternal(adj, for: displayID)
-    }
-
-    private func applyInternal(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
-        if adj.quantizationLevels < 256 {
-            applyQuantizedTable(adj, for: displayID)
-        } else {
-            applyFormula(adj, for: displayID)
-        }
+        applyTable(adj, for: displayID)
     }
 
     /// Apply identity transfer (gamma 1.0) to a single display without
@@ -105,7 +97,7 @@ final class GammaService: @unchecked Sendable {
             }
         }
         if BrightnessService.shared.currentSoftwareBrightness(for: displayID) != nil {
-            applyFormula(GammaAdjustment(), for: displayID)
+            applyTable(GammaAdjustment(), for: displayID)
         } else {
             CGSetDisplayTransferByFormula(displayID,
                 0.0, 1.0, 1.0,
@@ -270,10 +262,10 @@ final class GammaService: @unchecked Sendable {
         guard let adj = loadSavedState(for: display), !adj.isPaused else { return }
         let displayID = display.displayID
         adjustmentsLock.withLock { activeAdjustments[displayID] = adj }
-        applyInternal(adj, for: displayID)
+        applyTable(adj, for: displayID)
     }
 
-    // MARK: - Formula mode
+    // MARK: - Transfer table
 
     private struct ChannelParams {
         var rLo, rHi, rGam: Double
@@ -281,14 +273,11 @@ final class GammaService: @unchecked Sendable {
         var bLo, bHi, bGam: Double
     }
 
-    private func applyFormula(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
-        var p = channelParams(for: adj)
+    private func applyTable(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
+        let p = channelParams(for: adj)
         // Incorporate software brightness factor so BrightnessService and GammaService
         // do not overwrite each other's transfer function.
         let brightnessFactor = max(0.05, BrightnessService.shared.currentSoftwareBrightness(for: displayID) ?? 1.0)
-        p.rHi *= brightnessFactor
-        p.gHi *= brightnessFactor
-        p.bHi *= brightnessFactor
         // Boost region (factor > 1, external in HDR mode): entries may rise to
         // the boosted top; in the normal range the 1.0 ceiling is unchanged.
         let cap = max(1.0, brightnessFactor)
@@ -299,14 +288,21 @@ final class GammaService: @unchecked Sendable {
         var redTable   = [CGGammaValue](repeating: 0, count: capacity)
         var greenTable = [CGGammaValue](repeating: 0, count: capacity)
         var blueTable  = [CGGammaValue](repeating: 0, count: capacity)
+
+        func clamp(_ value: Double) -> Double { max(0.0, min(cap, value)) }
+
+        func tableValue(input: Double, lo: Double, hi: Double, gam: Double) -> CGGammaValue {
+            let start = lo * brightnessFactor
+            let end = hi * brightnessFactor
+            let sample = clamp(start + (end - start) * pow(input, gam))
+            return CGGammaValue(adj.quantized(sample, lower: clamp(min(start, end)), upper: clamp(max(start, end))))
+        }
+
         for i in 0..<capacity {
             let input = Double(i) / Double(capacity - 1)
-            func tableValue(lo: Double, hi: Double, gam: Double) -> CGGammaValue {
-                CGGammaValue(max(0.0, min(cap, lo + (hi - lo) * pow(input, gam))))
-            }
-            redTable[i]   = tableValue(lo: p.rLo, hi: p.rHi, gam: p.rGam)
-            greenTable[i] = tableValue(lo: p.gLo, hi: p.gHi, gam: p.gGam)
-            blueTable[i]  = tableValue(lo: p.bLo, hi: p.bHi, gam: p.bGam)
+            redTable[i]   = tableValue(input: input, lo: p.rLo, hi: p.rHi, gam: p.rGam)
+            greenTable[i] = tableValue(input: input, lo: p.gLo, hi: p.gHi, gam: p.gGam)
+            blueTable[i]  = tableValue(input: input, lo: p.bLo, hi: p.bHi, gam: p.bGam)
         }
         CGSetDisplayTransferByTable(displayID, UInt32(capacity),
                                     &redTable, &greenTable, &blueTable)
@@ -409,45 +405,5 @@ final class GammaService: @unchecked Sendable {
         }
 
         return (r, g, b)
-    }
-
-    // MARK: - Quantization (table mode)
-
-    private func applyQuantizedTable(_ adj: GammaAdjustment, for displayID: CGDirectDisplayID) {
-        let levels = max(2, min(255, adj.quantizationLevels))
-        let capacity = 256
-
-        var redTable   = [CGGammaValue](repeating: 0, count: capacity)
-        var greenTable = [CGGammaValue](repeating: 0, count: capacity)
-        var blueTable  = [CGGammaValue](repeating: 0, count: capacity)
-
-        var p = channelParams(for: adj)
-        // Incorporate software brightness factor, matching applyFormula behaviour.
-        let brightnessFactor = max(0.05, BrightnessService.shared.currentSoftwareBrightness(for: displayID) ?? 1.0)
-        p.rHi *= brightnessFactor
-        p.gHi *= brightnessFactor
-        p.bHi *= brightnessFactor
-        // Matches applyFormula: the boost region may rise above 1.0.
-        let cap = max(1.0, brightnessFactor)
-        let lastLevel = Double(levels - 1)
-
-        for i in 0..<capacity {
-            let input = Double(i) / Double(capacity - 1)
-
-            func tableValue(lo: Double, hi: Double, gam: Double) -> CGGammaValue {
-                let raw = lo + (hi - lo) * pow(input, gam)
-                let clamped = max(0.0, min(cap, raw))
-                let bucket = min(lastLevel, floor(clamped / cap * Double(levels)))
-                let stepped = bucket / lastLevel * cap
-                return CGGammaValue(stepped)
-            }
-
-            redTable[i]   = tableValue(lo: p.rLo, hi: p.rHi, gam: p.rGam)
-            greenTable[i] = tableValue(lo: p.gLo, hi: p.gHi, gam: p.gGam)
-            blueTable[i]  = tableValue(lo: p.bLo, hi: p.bHi, gam: p.bGam)
-        }
-
-        CGSetDisplayTransferByTable(displayID, UInt32(capacity),
-                                    &redTable, &greenTable, &blueTable)
     }
 }

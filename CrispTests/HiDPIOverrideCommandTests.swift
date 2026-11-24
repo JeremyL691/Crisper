@@ -76,6 +76,21 @@ final class HiDPIOverrideCommandTests: XCTestCase {
         XCTAssertThrowsError(try HiDPIOverrideCommand.uninstall(vendor: 1, product: 2, previous: previous))
     }
 
+    func testUninstallRecognizesOnlyTheExactLegacySmoothScalingPayload() throws {
+        let modes = [Data(repeating: 1, count: 8), Data(repeating: 2, count: 8)]
+        let legacy = try PropertyListSerialization.data(
+            fromPropertyList: ["scale-resolutions": modes], format: .xml, options: 0)
+        let custom = try PropertyListSerialization.data(
+            fromPropertyList: ["scale-resolutions": modes, "DisplayProductName": "Monitor"], format: .xml, options: 0)
+        let command = try HiDPIOverrideCommand.uninstall(vendor: 1, product: 2, previous: legacy, legacyModes: modes)
+        XCTAssertTrue(command.contains("/bin/rm -f"))
+        XCTAssertTrue(command.contains("/usr/bin/shasum -a 256"))
+        XCTAssertThrowsError(try HiDPIOverrideCommand.uninstall(
+            vendor: 1, product: 2, previous: custom, legacyModes: modes))
+        XCTAssertThrowsError(try HiDPIOverrideCommand.uninstall(
+            vendor: 1, product: 2, previous: legacy, legacyModes: Array(modes.reversed())))
+    }
+
     private func runInScratchDirectory(_ command: String, base: URL) throws -> Int32 {
         let script = command.replacingOccurrences(of: "/Library/Displays/Contents/Resources/Overrides", with: base.path)
         let process = Process()

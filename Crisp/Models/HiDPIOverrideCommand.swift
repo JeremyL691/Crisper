@@ -32,9 +32,16 @@ enum HiDPIOverrideCommand {
         return try update(vendor: vendor, product: product, previous: previous, replacement: data)
     }
 
-    static func uninstall(vendor: UInt32, product: UInt32, previous: Data) throws -> String {
+    static func uninstall(vendor: UInt32, product: UInt32, previous: Data, legacyModes: [Data] = []) throws -> String {
         var plist = try dictionary(previous)
-        guard let ownership = try stripOwnedModes(from: &plist) else { throw InvalidOverride.unmanaged }
+        guard let ownership = try stripOwnedModes(from: &plist) else {
+            // Old Crisper wrote a mode-only XML plist. Require the exact old payload
+            // so a custom or subsequently edited override is never removed on this path.
+            let legacy = try PropertyListSerialization.data(
+                fromPropertyList: [modesKey: legacyModes], format: .xml, options: 0)
+            guard !legacyModes.isEmpty, previous == legacy else { throw InvalidOverride.unmanaged }
+            return try update(vendor: vendor, product: product, previous: previous, replacement: nil)
+        }
         let replacement = ownership.hadFile || !plist.isEmpty
             ? try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             : nil

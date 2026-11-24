@@ -4,6 +4,8 @@ Reasoning, timings and tuned values behind gamma, Extra Brightness (EDR), CoreBr
 
 ## Gamma and software brightness
 
+Software brightness scales the full transfer curve, including inverted output. Quantization then divides each channel's clamped output range into levels. At 50% software brightness with neutral image settings, two levels produce 0 and 0.5.
+
 `GammaAdjustment`'s sliders map to `CGSetDisplayTransferByTable` inputs: gamma exponent is `2^(-slider/100)` (0 to 1.0, +100 to 0.5/brighter, -100 to 2.0/darker), gain is `1 + slider/100` (0 to 1.0, +100 to 2.0, -100 to 0.0), contrast shifts the output range by `slider/250` (+-100% to +-0.4), and color temperature (Tanner Helland algorithm) normalizes to 6500 K at 0. Inversion swaps each channel's min and max.
 
 `GammaService` builds the transfer table by hand instead of calling `CGSetDisplayTransferByFormula`: that API forces min/max into [0,1] with min<=max, which silently drops inversion (min>max), positive gain (max>1) and positive contrast. Sampling the curve into `CGSetDisplayTransferByTable` and clamping per entry (instead of clamping the endpoints up front) honors all three; clamping the endpoints would pin the max to 1.0 and no-op gain and contrast above 0.

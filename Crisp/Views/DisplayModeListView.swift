@@ -440,8 +440,9 @@ final class DisplayModeController: ObservableObject {
                     vendor: display.vendorNumber, product: display.modelNumber,
                     nativeWidth: nativeW, nativeHeight: nativeH)
             } else {
-                err = HiDPIService.shared.disableHiDPI(
-                    vendor: display.vendorNumber, product: display.modelNumber)
+                err = HiDPIService.shared.disableSmoothScaling(
+                    vendor: display.vendorNumber, product: display.modelNumber,
+                    nativeWidth: nativeW, nativeHeight: nativeH)
             }
             if let err {
                 withAnimation { errorMessage = err }
