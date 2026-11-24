@@ -139,6 +139,12 @@ final class KeepAwakeService: ObservableObject {
         evaluate(reason: "PowerSourceChange", trigger: .powerSourceChange)
     }
 
+    /// Re-evaluates assertions on kernel power-wake notifications (which include DarkWakes)
+    /// without declaring user activity, so overnight maintenance wakes do not light the screen.
+    func syncForPowerWake(reason: String) {
+        evaluate(reason: reason, trigger: .powerSourceChange)
+    }
+
     func syncForSystemWake(reason: String) {
         evaluate(reason: reason, trigger: .systemWake)
     }
@@ -176,7 +182,8 @@ final class KeepAwakeService: ObservableObject {
             )
             isActive = (displayAssertion != 0 || systemAssertion != 0)
 
-            if KeepAwakePolicy.shouldDeclareUserActivity(
+            if isActive,
+               KeepAwakePolicy.shouldDeclareUserActivity(
                 previousPhase: previousPhase,
                 decision: decision,
                 isOnACPower: onAC,
@@ -208,6 +215,7 @@ final class KeepAwakeService: ObservableObject {
     }
 
     private func declareWakeUserActivity() {
+        guard isActive else { return }
         releaseAssertion(&wakeTickleAssertion)
         _ = IOPMAssertionDeclareUserActivity(
             "Crisper Keep Awake AC Resume" as CFString,

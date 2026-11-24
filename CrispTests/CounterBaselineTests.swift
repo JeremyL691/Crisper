@@ -31,6 +31,21 @@ final class CounterBaselineTests: XCTestCase {
         XCTAssertEqual(pair.previous, 90_000)
     }
 
+    func testRepeatedResetCyclesNeverSpanPauseAndUnarmedResetIsSafe() throws {
+        var baseline = CounterBaseline<UInt64>()
+        baseline.reset()
+        XCTAssertFalse(baseline.isArmed)
+
+        XCTAssertNil(baseline.advance(to: 10))
+        XCTAssertEqual(try XCTUnwrap(baseline.advance(to: 25)).current, 25)
+
+        baseline.reset()
+        XCTAssertNil(baseline.advance(to: 5_000))
+        let resumed = try XCTUnwrap(baseline.advance(to: 5_012))
+        XCTAssertEqual(resumed.previous, 5_000)
+        XCTAssertEqual(resumed.current, 5_012)
+    }
+
     func testDiskSnapshotWithThroughputKeepsCapacityFields() {
         let volume = VolumeInfo(
             id: "data", name: "Data", mountPath: "/Volumes/Data", fileSystem: "apfs",

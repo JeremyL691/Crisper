@@ -16,13 +16,13 @@ final class HiDPIService: @unchecked Sendable {
 
     /// Checks whether HiDPI is enabled for the given display via plist override.
     func isHiDPIEnabled(for displayID: CGDirectDisplayID, vendor: UInt32, product: UInt32) -> Bool {
-        FileManager.default.fileExists(atPath: overridePlistURL(vendor: vendor, product: product).path)
+        isHiDPIEnabled(vendor: vendor, product: product)
     }
 
     /// Checks whether HiDPI is enabled for the given display via plist override only.
     func isHiDPIEnabled(vendor: UInt32, product: UInt32) -> Bool {
-        let plistURL = overridePlistURL(vendor: vendor, product: product)
-        return FileManager.default.fileExists(atPath: plistURL.path)
+        guard let existing = readScaleResolutions(vendor: vendor, product: product) else { return false }
+        return !existing.isEmpty
     }
 
     /// Enables HiDPI via plist override; requires a display reconnect (or reboot) to apply.
@@ -46,7 +46,10 @@ final class HiDPIService: @unchecked Sendable {
     func disableHiDPI(for displayID: CGDirectDisplayID,
                       vendor: UInt32,
                       product: UInt32) -> String? {
-        return disableHiDPIPlist(vendor: vendor, product: product)
+        let legacyModes = panelNativeSize(for: displayID).map {
+            generateScaledModes(nativeWidth: $0.width, nativeHeight: $0.height)
+        } ?? []
+        return disableHiDPIPlist(vendor: vendor, product: product, legacyModes: legacyModes)
     }
 
     func disableSmoothScaling(vendor: UInt32, product: UInt32,
@@ -121,7 +124,7 @@ final class HiDPIService: @unchecked Sendable {
     /// Writes the override plist with the given scale-resolutions entries via admin auth,
     /// then re-probes so macOS re-enumerates modes. Shared by normal HiDPI and smooth scaling.
     private func writeScaledModesPlist(vendor: UInt32, product: UInt32, scaledModes: [Data]) -> String? {
-        let command: String
+        let command: String?
         do {
             let previous = try readOverride(vendor: vendor, product: product)
             command = try HiDPIOverrideCommand.install(
@@ -129,7 +132,7 @@ final class HiDPIService: @unchecked Sendable {
         } catch {
             return "Failed to generate override: \(error.localizedDescription)"
         }
-        if let err = executePrivilegedCommand(command) {
+        if let command, let err = executePrivilegedCommand(command) {
             return err
         }
 
@@ -239,6 +242,11 @@ final class HiDPIService: @unchecked Sendable {
     }
 
     private func readOverride(vendor: UInt32, product: UInt32) throws -> Data? {
+        let dirURL = overrideDir(vendor: vendor)
+        if let dirAttrs = try? FileManager.default.attributesOfItem(atPath: dirURL.path),
+           dirAttrs[.type] as? FileAttributeType != .typeDirectory {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
         let url = overridePlistURL(vendor: vendor, product: product)
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -251,15 +259,31 @@ final class HiDPIService: @unchecked Sendable {
         }
     }
 
-    /// True when all the requested modes are already installed.
-    private func overridePlistMatches(vendor: UInt32, product: UInt32, scaledModes: [Data]) -> Bool {
-        let url = overridePlistURL(vendor: vendor, product: product)
-        guard let data = try? Data(contentsOf: url),
+    private func readScaleResolutions(vendor: UInt32, product: UInt32) -> [Data]? {
+        guard let data = (try? readOverride(vendor: vendor, product: product)) ?? nil,
               let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
               let dict = obj as? [String: Any],
               let existing = dict["scale-resolutions"] as? [Data]
-        else { return false }
+        else { return nil }
+        return existing
+    }
+
+    /// True when all the requested modes are already installed on a regular override file.
+    private func overridePlistMatches(vendor: UInt32, product: UInt32, scaledModes: [Data]) -> Bool {
+        guard let existing = readScaleResolutions(vendor: vendor, product: product) else { return false }
         return Set(scaledModes).isSubset(of: Set(existing))
+    }
+
+    private func panelNativeSize(for displayID: CGDirectDisplayID) -> (width: Int, height: Int)? {
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let rawModes = (CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode]) ?? []
+        let native = rawModes.filter { $0.pixelWidth == $0.width }.max { $0.pixelWidth < $1.pixelWidth }
+            ?? rawModes.max { $0.pixelWidth < $1.pixelWidth }
+        let w = native?.pixelWidth ?? CGDisplayPixelsWide(displayID)
+        let h = native?.pixelHeight ?? CGDisplayPixelsHigh(displayID)
+        guard w > 0, h > 0 else { return nil }
+        let rotation = Int(CGDisplayRotation(displayID).rounded())
+        return (rotation == 90 || rotation == 270) ? (h, w) : (w, h)
     }
 
     private func generateScaledModes(nativeWidth: Int, nativeHeight: Int) -> [Data] {

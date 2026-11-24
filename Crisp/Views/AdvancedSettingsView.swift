@@ -147,7 +147,11 @@ struct AdvancedGeneralTab: View {
     }
 
     private func refreshExternalState() {
-        cliInstalled = CrispctlInstaller.isInstalled
+        let installed = CrispctlInstaller.isInstalled
+        if cliInstalled != installed {
+            cliInstalled = installed
+            cliInstallError = nil
+        }
         let launchesAtLogin = LaunchService.shared.isEnabled
         if settings.launchAtLogin != launchesAtLogin { settings.launchAtLogin = launchesAtLogin }
         coreBrightness.refresh()
@@ -183,6 +187,9 @@ struct AdvancedMenuBarTab: View {
         .formStyle(.grouped)
         .scrollDisabled(true)  // the window's scroll view scrolls; this one took the wheel
         .onAppear {
+            helper.refreshStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             helper.refreshStatus()
         }
         .frame(maxWidth: .infinity)  // the window sets the width, scroll bar included
@@ -495,11 +502,21 @@ struct AdvancedKeyboardTab: View {
                 recorder("Volume Down", \.volumeDownShortcut) { settings.volumeDownShortcut = $0 }
                 recorder("Mute", \.muteShortcut) { settings.muteShortcut = $0 }
                 caption("Presses the volume keys for the selected sound output. Needs Accessibility, like the brightness keys.")
+                if let error = settings.shortcutAssignmentError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)  // the window's scroll view scrolls; this one took the wheel
-        .onAppear { isTrusted = AXIsProcessTrusted() }
+        .onAppear {
+            isTrusted = AXIsProcessTrusted()
+            settings.clearShortcutAssignmentError()
+        }
+        .onDisappear { settings.clearShortcutAssignmentError() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             isTrusted = AXIsProcessTrusted()
         }

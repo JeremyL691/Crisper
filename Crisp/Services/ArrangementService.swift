@@ -13,10 +13,18 @@ class ArrangementService {
     /// Used by preset restore, which writes each display's saved absolute origin.
     @discardableResult
     func setPosition(x: Int, y: Int, for displayID: CGDirectDisplayID) async -> Bool {
-        // A mirrored target has no independent position in a preset.
-        guard CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay else { return true }
+        let targetID: CGDirectDisplayID
+        if let virtualSource = MirroredModeService.shared.virtualDisplayID(for: displayID),
+           Self.arrangementID(for: displayID) == virtualSource {
+            targetID = virtualSource
+        } else if CGDisplayMirrorsDisplay(displayID) == kCGNullDirectDisplay {
+            targetID = displayID
+        } else {
+            // A regular mirrored target has no independent position in a preset.
+            return true
+        }
         PresetService.shared.noteManualChange()
-        return await applyOrigins([(displayID, x, y)])
+        return await applyOrigins([(targetID, x, y)])
     }
 
     /// Moves `displayID` to (x, y) for an interactive drag, keeping the main display pinned

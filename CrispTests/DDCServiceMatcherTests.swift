@@ -14,6 +14,20 @@ final class DDCServiceMatcherTests: XCTestCase {
         XCTAssertFalse(ambiguous.matchesAttachment(attached, excluding: [unplugged]))
     }
 
+    func testReconnectAllowsPortMovedSerialZeroMonitorWhenNoSameModelPeerExists() {
+        let savedOnPortA = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0, location: "port-a")
+        let movedToPortB = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0, location: "port-b")
+        let differentModelPeer = DDCServiceMatcher.Identity(vendor: 9, product: 9, serial: 0, location: "port-c")
+
+        XCTAssertTrue(savedOnPortA.matchesAttachment(movedToPortB, excluding: []))
+        XCTAssertTrue(savedOnPortA.matchesAttachment(movedToPortB, excluding: [differentModelPeer]))
+        // Still rejects when an online peer of the same model sits at the live location.
+        XCTAssertFalse(savedOnPortA.matchesAttachment(movedToPortB, excluding: [movedToPortB]))
+        // Still rejects when another peer of the same model exists at a different location.
+        let otherPeer = DDCServiceMatcher.Identity(vendor: 1, product: 2, serial: 0, location: "port-c")
+        XCTAssertFalse(savedOnPortA.matchesAttachment(movedToPortB, excluding: [otherPeer]))
+    }
+
     // MARK: - Strategy 1: exact (vendor + product + serial) matching
 
     /// One service, one display, identical identity: the happy path.

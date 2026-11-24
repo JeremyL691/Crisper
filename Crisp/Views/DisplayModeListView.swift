@@ -413,6 +413,9 @@ final class DisplayModeController: ObservableObject {
                 $0.isHiDPI == target.isHiDPI && $0.width == target.width && $0.height == target.height &&
                 $0.isVariableRefresh == cur.isVariableRefresh &&
                 ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate)
+            } ?? display.availableModes.first {
+                $0.isHiDPI == target.isHiDPI && $0.width == target.width && $0.height == target.height &&
+                ResolutionService.refreshMatches($0.refreshRate, cur.refreshRate)
             }
         } ?? target
         guard mode.id != currentMode?.id else { return }

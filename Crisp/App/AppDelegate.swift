@@ -68,82 +68,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Called after wake-from-sleep; wired in setupStartupBehavior.
     var onWake: (() -> Void)?
 
-    /// One-time non-destructive import of Crisp (`com.crisp.app`) preferences into Crisper's
-    /// standard defaults, excluding legacy multi-virtual-display and migration sentinel keys.
-    @discardableResult
-    static func importCrispDefaultsIfNeeded() -> Bool {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "crisper.didImportFromCrisp") else { return false }
-        let excludedKeys: Set<String> = [
-            "crisp.VirtualDisplayConfigs",
-            "crisp.didMigrateLegacyDefaults"
-        ]
-        if let crispDomain = defaults.persistentDomain(forName: "com.crisp.app") {
-            for (key, value) in crispDomain {
-                guard !excludedKeys.contains(key),
-                      !key.hasPrefix("SU"),
-                      !key.hasPrefix("NS"),
-                      !key.hasPrefix("Apple") else { continue }
-                if defaults.object(forKey: key) == nil {
-                    defaults.set(value, forKey: key)
-                }
-            }
-        } else if let crispSuite = UserDefaults(suiteName: "com.crisp.app") {
-            for (key, value) in crispSuite.dictionaryRepresentation()
-            where key.hasPrefix("crisp.") || key.hasPrefix("fd.") {
-                guard !excludedKeys.contains(key) else { continue }
-                if defaults.object(forKey: key) == nil {
-                    defaults.set(value, forKey: key)
-                }
-            }
-        }
-        let fm = FileManager.default
-        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return false
-        }
-        do {
-            try importCrispPresets(in: appSupport, using: fm)
-        } catch {
-            log.error("Could not import Crisp presets: \(error.localizedDescription, privacy: .public)")
-            return false
-        }
-        defaults.set(true, forKey: "crisper.didImportFromCrisp")
-        return true
-    }
-
-    private static func importCrispPresets(in appSupport: URL, using fm: FileManager) throws {
-        let source = appSupport.appendingPathComponent("Crisp/presets.json")
-        let destinationDirectory = appSupport.appendingPathComponent("Crisper", isDirectory: true)
-        let destination = destinationDirectory.appendingPathComponent("presets.json")
-        do {
-            guard try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
-            return
-        }
-        var isDirectory: ObjCBool = false
-        if fm.fileExists(atPath: destination.path, isDirectory: &isDirectory), !isDirectory.boolValue { return }
-        try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
-        try fm.copyItem(at: source, to: destination)
-    }
-
-    /// One-time migration of legacy `fd.*` UserDefaults keys into the `crisp.*`
-    /// namespace, idempotent via a sentinel flag so existing installs keep their
-    /// settings instead of resetting to defaults.
-    @discardableResult
-    static func migrateLegacyDefaultsNamespace() -> Bool {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "crisp.didMigrateLegacyDefaults") else { return false }
-        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("fd.") {
-            let newKey = "crisp." + key.dropFirst(3)
-            if defaults.object(forKey: newKey) == nil { defaults.set(value, forKey: newKey) }
-            defaults.removeObject(forKey: key)
-        }
-        defaults.set(true, forKey: "crisp.didMigrateLegacyDefaults")
-        return true
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Prevent duplicate launch via an exclusive file lock. Unlike consulting
         // NSWorkspace (whose entries linger during teardown and race with fast
@@ -1001,6 +925,93 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSEvent.removeMonitor(monitor)
             clickMonitor = nil
         }
+    }
+}
+
+// MARK: - Legacy import & migration
+
+extension AppDelegate {
+    /// One-time non-destructive import of Crisp (`com.crisp.app`) preferences into Crisper's
+    /// standard defaults, excluding legacy multi-virtual-display and migration sentinel keys.
+    @discardableResult
+    static func importCrispDefaultsIfNeeded() -> Bool {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "crisper.didImportFromCrisp") else { return false }
+        if !defaults.bool(forKey: "crisper.didImportDefaultsFromCrisp") {
+            let excludedKeys: Set<String> = ["crisp.VirtualDisplayConfigs", "crisp.didMigrateLegacyDefaults"]
+            if let crispDomain = defaults.persistentDomain(forName: "com.crisp.app") {
+                for (key, value) in crispDomain where !excludedKeys.contains(key)
+                    && !key.hasPrefix("SU") && !key.hasPrefix("NS") && !key.hasPrefix("Apple") {
+                    if defaults.object(forKey: key) == nil { defaults.set(value, forKey: key) }
+                }
+            } else if let crispSuite = UserDefaults(suiteName: "com.crisp.app") {
+                for (key, value) in crispSuite.dictionaryRepresentation()
+                where (key.hasPrefix("crisp.") || key.hasPrefix("fd.")) && !excludedKeys.contains(key) {
+                    if defaults.object(forKey: key) == nil { defaults.set(value, forKey: key) }
+                }
+            }
+            defaults.set(true, forKey: "crisper.didImportDefaultsFromCrisp")
+        }
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        do {
+            try importCrispPresets(in: appSupport, using: fm)
+        } catch {
+            log.error("Could not import Crisp presets: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        defaults.set(true, forKey: "crisper.didImportFromCrisp")
+        return true
+    }
+
+    private static func importCrispPresets(in appSupport: URL, using fm: FileManager) throws {
+        let source = appSupport.appendingPathComponent("Crisp/presets.json")
+        let destinationDirectory = appSupport.appendingPathComponent("Crisper", isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent("presets.json")
+        var sourceStat = stat()
+        if stat(source.path, &sourceStat) != 0 {
+            let err = errno
+            if err == ENOENT || err == ENOTDIR || err == ELOOP { return }
+            throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+        }
+        guard (sourceStat.st_mode & S_IFMT) == S_IFREG else {
+            log.notice("Skipping Crisp presets import: source is not a regular file")
+            return
+        }
+        let resolvedSource = source.resolvingSymlinksInPath()
+        var resolvedStat = stat()
+        guard stat(resolvedSource.path, &resolvedStat) == 0,
+              (resolvedStat.st_mode & S_IFMT) == S_IFREG else { return }
+        var destStat = stat()
+        if lstat(destination.path, &destStat) == 0 { return }
+        let destErr = errno
+        if destErr != ENOENT && destErr != ENOTDIR {
+            throw POSIXError(POSIXErrorCode(rawValue: destErr) ?? .EIO)
+        }
+        try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        do {
+            try fm.copyItem(at: resolvedSource, to: destination)
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            return
+        }
+    }
+
+    /// One-time migration of legacy `fd.*` UserDefaults keys into the `crisp.*`
+    /// namespace, idempotent via a sentinel flag so existing installs keep their
+    /// settings instead of resetting to defaults.
+    @discardableResult
+    static func migrateLegacyDefaultsNamespace() -> Bool {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "crisp.didMigrateLegacyDefaults") else { return false }
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("fd.") {
+            let newKey = "crisp." + key.dropFirst(3)
+            if defaults.object(forKey: newKey) == nil { defaults.set(value, forKey: newKey) }
+            defaults.removeObject(forKey: key)
+        }
+        defaults.set(true, forKey: "crisp.didMigrateLegacyDefaults")
+        return true
     }
 }
 

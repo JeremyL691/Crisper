@@ -131,7 +131,7 @@ final class GammaService: @unchecked Sendable {
     func resetSingleDisplay(_ displayID: CGDirectDisplayID) {
         _ = adjustmentsLock.withLock { activeAdjustments.removeValue(forKey: displayID) }
         if let factor = BrightnessService.shared.currentSoftwareBrightness(for: displayID) {
-            BrightnessService.shared.setSoftwareBrightness(factor * 100, for: displayID)
+            BrightnessService.shared.setSoftwareBrightness(factor * 100, for: displayID, forceTableWrite: true)
             return
         }
         let size = 256

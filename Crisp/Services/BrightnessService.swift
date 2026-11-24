@@ -351,64 +351,62 @@ final class BrightnessService: @unchecked Sendable {
                 }
             }
         } else {
-            let readToken = ddcPumpLock.withLock {
-                ddcOperationGeneration.currentToken(for: displayID)
-            }
-            // DDC already known unavailable: nothing to read back from gamma
-            // tables, so leave the value as-is.
-            let knownUnavailable: Bool = ddcAvailableLock.withLock {
-                ddcAvailable[displayID] == false
-            }
-            if knownUnavailable {
+            if Self.isExternalHDRActive(for: display) {
+                setHDRSoftwareDimming(true, for: displayID)
                 return
             }
+            // Skip physical I2C polling whenever this display routes through software
+            // brightness (unavailable DDC, user-forced software, or HDR dimming).
+            let usesSoftwareBrightness = ddcAvailableLock.withLock {
+                ddcAvailable[displayID] == false
+                    || forcedSoftwareUUIDs.contains(display.displayUUID)
+                    || hdrDimmedDisplays.contains(displayID)
+            }
+            if usesSoftwareBrightness { return }
+            let readToken = ddcPumpLock.withLock { ddcOperationGeneration.currentToken(for: displayID) }
 
             DDCService.shared.readAsync(
-                displayID: displayID,
-                command: DDCService.brightnessVCP
+                displayID: displayID, command: DDCService.brightnessVCP,
+                isCurrent: isCurrentTopologyCheck(readToken, for: displayID)
             ) { [weak self] result in
-                guard let self else { return }
-                if let result = result, result.max > 0 {
-                    let brightness = Double(result.current) / Double(result.max) * 100.0
-                    let firstRead: Bool? = self.ddcPumpLock.withLock {
-                        guard self.ddcOperationGeneration.isCurrentTopology(
-                            readToken, for: displayID
-                        ) else { return nil }
-                        return self.ddcAvailableLock.withLock {
-                            let firstRead = self.ddcAvailable[displayID] != true
-                            self.ddcAvailable[displayID] = true
-                            self.ddcMaxBrightness[displayID] = result.max
-                            return firstRead
-                        }
-                    }
-                    guard let firstRead else { return }
-                    if firstRead {
-                        Self.log.notice("display \(displayID, privacy: .public): DDC brightness read ok \(result.current, privacy: .public)/\(result.max, privacy: .public), brightness over DDC")
-                    }
-                    Task { @MainActor in
-                        // DDC reads quantize, so a value we just set can read
-                        // back slightly off. Adopt the read only on first seed
-                        // or a large enough change to be a real external move.
-                        self.ddcPumpLock.withLock {
-                            guard self.ddcOperationGeneration.isLatestRequest(
-                                readToken, for: displayID
-                            ), display.brightness <= 100 else { return }
-                            let usesSoftwareBrightness = self.ddcAvailableLock.withLock {
-                                self.hdrDimmedDisplays.contains(displayID)
-                                    || self.forcedSoftwareUUIDs.contains(display.displayUUID)
-                                    || self.ddcAvailable[displayID] == false
-                            }
-                            if !usesSoftwareBrightness && (firstRead || abs(brightness - display.brightness) > 3.0) {
-                                display.brightness = brightness
-                            }
-                        }
+                guard let self, let result, result.max > 0 else { return }
+                let brightness = Double(result.current) / Double(result.max) * 100.0
+                let firstRead: Bool? = self.ddcPumpLock.withLock {
+                    guard self.ddcOperationGeneration.isCurrentTopology(readToken, for: displayID) else { return nil }
+                    return self.ddcAvailableLock.withLock {
+                        let firstRead = self.ddcAvailable[displayID] != true
+                        self.ddcAvailable[displayID] = true
+                        self.ddcMaxBrightness[displayID] = result.max
+                        return firstRead
                     }
                 }
-                // A failed/ignored read does NOT mean DDC is unavailable: many
-                // monitors accept writes but never answer reads. Leaving
-                // availability undetermined lets the write path decide instead
-                // of wrongly forcing the software fallback (see docs/ddc-notes.md).
+                guard let firstRead else { return }
+                if firstRead {
+                    Self.log.notice("display \(displayID, privacy: .public): DDC brightness read ok \(result.current, privacy: .public)/\(result.max, privacy: .public), brightness over DDC")
+                }
+                Task { @MainActor in
+                    if Self.isExternalHDRActive(for: display) {
+                        self.setHDRSoftwareDimming(true, for: displayID)
+                        return
+                    }
+                    // DDC reads quantize, so a value we just set can read back slightly off.
+                    // Adopt only on first seed or a large enough change to be a real external move.
+                    let shouldAdopt = self.ddcPumpLock.withLock {
+                        guard self.ddcOperationGeneration.isLatestRequest(readToken, for: displayID),
+                              display.brightness <= 100 else { return false }
+                        let softwareRoute = self.ddcAvailableLock.withLock {
+                            self.hdrDimmedDisplays.contains(displayID)
+                                || self.forcedSoftwareUUIDs.contains(display.displayUUID)
+                                || self.ddcAvailable[displayID] == false
+                        }
+                        return !softwareRoute && (firstRead || abs(brightness - display.brightness) > 3.0)
+                    }
+                    if shouldAdopt { display.brightness = brightness }
+                }
             }
+            // A failed/ignored read does NOT mean DDC is unavailable: many monitors accept
+            // writes but never answer reads. Leaving availability undetermined lets the
+            // write path decide instead of wrongly forcing software fallback (docs/ddc-notes.md).
         }
     }
 
@@ -747,9 +745,8 @@ final class BrightnessService: @unchecked Sendable {
 
         lastDDCWriteInstant[displayID] = .now()
         DDCService.shared.writeAsync(
-            displayID: displayID,
-            command: DDCService.brightnessVCP,
-            value: ddcValue
+            displayID: displayID, command: DDCService.brightnessVCP, value: ddcValue,
+            isCurrent: isCurrentTopologyCheck(target.token, for: displayID)
         ) { [weak self] success in
             guard let self else { return }
             if success {
@@ -1274,6 +1271,20 @@ extension BrightnessService {
         }
         setSoftwareBrightnessForced(route == .software, for: display)
     }
+
+    private func isCurrentTopologyCheck(_ token: DDCOperationGeneration.Token, for displayID: CGDirectDisplayID) -> @Sendable () -> Bool {
+        { [weak self] in
+            guard let self else { return false }
+            return self.ddcPumpLock.withLock { self.ddcOperationGeneration.isCurrentTopology(token, for: displayID) }
+        }
+    }
+
+    @MainActor
+    private static func isExternalHDRActive(for display: DisplayInfo) -> Bool {
+        guard !display.isBuiltin else { return false }
+        if BrightnessBoostService.shared.isHDREnabled(for: display) { return true }
+        return (NSScreen.screen(for: display.displayID)?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0) > 1.05
+    }
 }
 
 // MARK: - Software Brightness (Gamma Table Fallback)
@@ -1285,11 +1296,7 @@ extension BrightnessService {
     /// docs/brightness-notes.md (gamma and software brightness). Delegates to
     /// GammaService when it has an active adjustment, so the two don't
     /// overwrite each other's transfer table.
-    func setSoftwareBrightness(
-        _ brightness: Double,
-        for displayID: CGDirectDisplayID,
-        forceTableWrite: Bool = false
-    ) {
+    func setSoftwareBrightness(_ brightness: Double, for displayID: CGDirectDisplayID, forceTableWrite: Bool = false) {
         let factor = max(0.05, brightness / 100.0)
         let (shouldPersist, shouldWriteTable): (Bool, Bool) = softwareBrightnessLock.withLock {
             softwareBrightnessFactors[displayID] = factor
@@ -1319,29 +1326,18 @@ extension BrightnessService {
 
         // No active gamma adjustment, write a plain dimmed ramp directly.
         let floatFactor = Float(factor)
-        let tableSize: UInt32 = 256
-        var red   = [CGGammaValue](repeating: 0, count: Int(tableSize))
-        var green = [CGGammaValue](repeating: 0, count: Int(tableSize))
-        var blue  = [CGGammaValue](repeating: 0, count: Int(tableSize))
-
-        for i in 0..<Int(tableSize) {
-            let v = CGGammaValue(Float(i) / Float(tableSize - 1) * floatFactor)
-            red[i]   = v
-            green[i] = v
-            blue[i]  = v
-        }
-
-        _ = CGSetDisplayTransferByTable(displayID, tableSize, &red, &green, &blue)
+        let size = 256
+        let values = (0..<size).map { CGGammaValue(Float($0) / Float(size - 1) * floatFactor) }
+        var red = values
+        var green = values
+        var blue = values
+        _ = CGSetDisplayTransferByTable(displayID, UInt32(size), &red, &green, &blue)
     }
 
     /// External boost region: BrightnessBoostService drives the transfer table
     /// above 1.0 through here, on the same serial queue as the dim path, so
     /// slider motion above and below 100 is always one writer, one table.
-    func setBoostFactor(
-        _ factor: Double,
-        for displayID: CGDirectDisplayID,
-        force: Bool = false
-    ) {
+    func setBoostFactor(_ factor: Double, for displayID: CGDirectDisplayID, force: Bool = false) {
         applyLatestSoftwareBrightness(factor * 100.0, for: displayID, forceTableWrite: force)
     }
 

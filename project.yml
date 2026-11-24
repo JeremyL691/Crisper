@@ -19,6 +19,7 @@ targets:
       - target: crispctl
         link: false
         embed: true
+        codeSign: true
         copy:
           destination: executables
     sources:
@@ -61,6 +62,9 @@ targets:
       base:
         PRODUCT_NAME: crisperctl
         SWIFT_VERSION: "6.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGN_IDENTITY: "Apple Development"
   CrispTests:
     type: bundle.unit-test
     platform: macOS
@@ -100,6 +104,8 @@ targets:
       - path: Crisp/Models/MenuBarAppearance.swift
       - path: Crisp/Models/SystemMonitorModels.swift
       - path: Crisp/Models/PrivilegedHelperCommand.swift
+      - path: Crisp/Models/PhysicalDisplayReconnectPolicy.swift
+      - path: Crisp/Models/CrispctlInstallCommand.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.crisper.tests

@@ -41,10 +41,14 @@ final class SystemMonitorService: ObservableObject {
     private var consecutiveNilTempReads = 0
 
     private var pollTask: Task<Void, Never>?
+    private var activePollMode: PollMode = .stopped
     /// CPU ticks and disk byte counters are cumulative. Any pause in full polling would turn
     /// the next delta into an average over the whole time the panel was closed or the Mac was
     /// asleep, so the next full sample re-arms the baselines instead of reporting a rate.
     private var rateBaselinesNeedReset = true
+    /// True after a baseline-rearm tick ran and before the first real rate delta lands, so
+    /// rescheduling mid-warmup keeps the short warmup delay instead of waiting a full interval.
+    private var isAwaitingRateWarmup = false
     private var feedbackClearTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -72,7 +76,7 @@ final class SystemMonitorService: ObservableObject {
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.reschedulePolling(immediate: false)
+                self?.reschedulePollingIfModeChanged(immediate: false)
             }
             .store(in: &cancellables)
 
@@ -80,7 +84,7 @@ final class SystemMonitorService: ObservableObject {
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.reschedulePolling(immediate: false)
+                self?.reschedulePollingIfModeChanged(immediate: false)
             }
             .store(in: &cancellables)
 
@@ -158,6 +162,8 @@ final class SystemMonitorService: ObservableObject {
         isShutdown = true
         pollTask?.cancel()
         pollTask = nil
+        activePollMode = .stopped
+        isAwaitingRateWarmup = false
         feedbackClearTask?.cancel()
         feedbackClearTask = nil
         cancellables.removeAll()
@@ -187,8 +193,8 @@ final class SystemMonitorService: ObservableObject {
     }
 
     /// After a rate baseline is re-armed, the first real CPU/disk rate follows this soon
-    /// instead of a full refresh interval later.
-    private static let rateWarmupSeconds: TimeInterval = 1.0
+    /// instead of a full refresh interval later (well above the 0.05s minimum disk dt).
+    private static let rateWarmupSeconds: TimeInterval = 0.25
 
     private var desiredPollMode: PollMode {
         guard isStarted, !isShutdown, !isSleeping, !areScreensAsleep else { return .stopped }
@@ -202,19 +208,31 @@ final class SystemMonitorService: ObservableObject {
         return .stopped
     }
 
+    private func reschedulePollingIfModeChanged(immediate: Bool) {
+        guard desiredPollMode != activePollMode else { return }
+        reschedulePolling(immediate: immediate)
+    }
+
     private func reschedulePolling(immediate: Bool) {
         pollTask?.cancel()
         pollTask = nil
 
         let mode = desiredPollMode
-        if !mode.isFull { rateBaselinesNeedReset = true }
+        activePollMode = mode
+        if !mode.isFull {
+            rateBaselinesNeedReset = true
+            isAwaitingRateWarmup = false
+        }
         guard mode != .stopped else { return }
 
         pollTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var tickCount = 0
             if !immediate {
-                let delay = Self.intervalSeconds(for: mode)
+                let baseDelay = Self.intervalSeconds(for: mode)
+                let delay = (mode.isFull && self.isAwaitingRateWarmup)
+                    ? min(baseDelay, Self.rateWarmupSeconds)
+                    : baseDelay
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
 
@@ -231,12 +249,16 @@ final class SystemMonitorService: ObservableObject {
                     let refreshVolumes = (tickCount % 5 == 0)
                     tickCount += 1
                     let resetRateBaselines = self.rateBaselinesNeedReset
-                    self.rateBaselinesNeedReset = false
+                    if resetRateBaselines {
+                        self.rateBaselinesNeedReset = false
+                        self.isAwaitingRateWarmup = true
+                    }
                     let payload = await self.collector.sampleFull(
                         includeVolumes: refreshVolumes,
                         resetRateBaselines: resetRateBaselines
                     )
                     guard !Task.isCancelled, !self.isShutdown else { return }
+                    self.isAwaitingRateWarmup = !payload.hasRates
                     self.applyFullSample(payload)
                     let delay = payload.hasRates ? interval : min(interval, Self.rateWarmupSeconds)
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -252,21 +274,23 @@ final class SystemMonitorService: ObservableObject {
         }
     }
 
-    /// A sample that only re-armed the rate baselines carries no CPU load or disk rate; the
-    /// last shown values stay until the next sample and nothing is added to the history.
+    /// A sample that only re-armed the rate baselines carries no CPU load or disk rate; clear
+    /// stale pre-pause rates immediately and keep CPU/GPU history rings in lockstep until the
+    /// warmup tick delivers fresh rates.
     private func applyFullSample(_ payload: TelemetryFullSample) {
         updateCPUTemperature(payload.cpuTemperatureC)
+        gpuSample = payload.gpu
         if let cpu = payload.cpu {
             cpuSample = cpu
             cpuRing.append(cpu)
             cpuHistory = cpuRing.elements
+            gpuRing.append(payload.gpu)
+            gpuHistory = gpuRing.elements
+        } else {
+            cpuSample = CPUSample(user: 0, system: 0, idle: 100, temperatureC: payload.cpuTemperatureC)
         }
 
-        gpuSample = payload.gpu
-        gpuRing.append(payload.gpu)
-        gpuHistory = gpuRing.elements
-
-        let rates = payload.diskRates ?? (disk.readBytesPerSec, disk.writeBytesPerSec)
+        let rates = payload.diskRates ?? (read: 0, write: 0)
         disk = payload.disk.withThroughput(readBytesPerSec: rates.read, writeBytesPerSec: rates.write)
         ram = payload.ram
     }

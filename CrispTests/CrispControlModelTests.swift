@@ -771,3 +771,93 @@ final class CrispControlModelTests: XCTestCase {
         CrispControlCLIModel.classify(Data(json.utf8), for: command)
     }
 }
+
+extension CrispControlModelTests {
+    func testInvocationHandlesHelpVersionAndSkillBeforeSeparatorAndLiteralOperandsAfter() throws {
+        let presetApply = try XCTUnwrap(CrispControlCLIModel.entries.first { $0.usage == "preset apply <preset>" })
+        let displayDisconnect = try XCTUnwrap(CrispControlCLIModel.entries.first { $0.usage == "display disconnect <display>" })
+        let hdrSet = try XCTUnwrap(CrispControlCLIModel.entries.first { $0.usage == "hdr set <display> on|off" })
+
+        // Options before `--` must resolve to help/version and never mutate.
+        for arguments in [["--help", "--"], ["-h", "--"], ["help", "--"], ["--help", "--", "preset", "apply", "Night"]] {
+            XCTAssertEqual(CrispControlCLIModel.parseInvocation(arguments: arguments).result, .help(.all), "\(arguments)")
+        }
+        for arguments in [["--version", "--"], ["version", "--"]] {
+            XCTAssertEqual(CrispControlCLIModel.parseInvocation(arguments: arguments).result, .version, "\(arguments)")
+        }
+        for arguments in [["preset", "apply", "--help", "--"], ["preset", "apply", "-h", "--"],
+                          ["preset", "apply", "--help", "--", "Night"]] {
+            XCTAssertEqual(
+                CrispControlCLIModel.parseInvocation(arguments: arguments).result,
+                .help(.command(presetApply)),
+                "\(arguments)"
+            )
+        }
+        XCTAssertEqual(
+            CrispControlCLIModel.parseInvocation(arguments: ["display", "disconnect", "--help", "--"]).result,
+            .help(.command(displayDisconnect))
+        )
+        XCTAssertEqual(
+            CrispControlCLIModel.parseInvocation(arguments: ["hdr", "set", "--help", "on", "--"]).result,
+            .help(.command(hdrSet))
+        )
+        XCTAssertEqual(
+            CrispControlCLIModel.parseInvocation(arguments: ["display", "--help", "--"]).result,
+            .help(.group(.display))
+        )
+        XCTAssertEqual(CrispControlCLIModel.parseInvocation(arguments: ["skill", "show", "--"]).result, .showSkill)
+        XCTAssertEqual(
+            CrispControlCLIModel.parseInvocation(arguments: ["skill", "install", "--", "claude"]).result,
+            .installSkill(agent: "claude")
+        )
+
+        // Literal operands after `--` remain literal names.
+        for literal in ["--help", "-h", "--json"] {
+            let parsed = CrispControlCLIModel.parseInvocation(arguments: ["preset", "apply", "--", literal])
+            XCTAssertFalse(parsed.json, literal)
+            XCTAssertEqual(parsed.result, .request(.init(command: .applyPreset, selector: literal)), literal)
+        }
+    }
+
+    func testDisconnectedDisplayRejectedForBrightnessBoostAndHDRIncludingReusedStaleID() {
+        let reusedOnline = CrispControlDisplay(
+            id: 9,
+            name: "Reused Online",
+            brightness: 50,
+            maxBrightness: 160,
+            isBuiltin: false,
+            uuid: "11111111-2222-3333-4444-555555555555",
+            connected: true
+        )
+        let disconnected = CrispControlDisplay(
+            id: 9,
+            name: "Held Off",
+            brightness: 0,
+            maxBrightness: 160,
+            isBuiltin: false,
+            uuid: "DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD",
+            connected: false
+        )
+        let displays = [reusedOnline, disconnected]
+        let requests = [
+            #"{"command":"setBrightness","selector":"DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD","brightness":50}"#,
+            #"{"command":"getBrightnessBoost","selector":"DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD"}"#,
+            #"{"command":"setBrightnessBoost","selector":"DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD","enabled":true}"#,
+            #"{"command":"getHDR","selector":"DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD"}"#,
+            #"{"command":"setHDR","selector":"DECC7CEF-5E36-4E9B-8F18-CE11AE5902AD","enabled":true}"#
+        ]
+        for request in requests {
+            let result = CrispControlModel.handle(
+                Data(request.utf8),
+                displays: displays,
+                hdrState: { id in .init(displayID: id, enabled: true) },
+                hdrMutationUUID: { _ in reusedOnline.uuid },
+                brightnessBoostState: { id in .init(displayID: id, eligible: true, enabled: true) }
+            )
+            XCTAssertEqual(result.response, .failure("display is not connected"), request)
+            XCTAssertNil(result.brightnessChange, request)
+            XCTAssertNil(result.brightnessBoostChange, request)
+            XCTAssertNil(result.hdrChange, request)
+        }
+    }
+}

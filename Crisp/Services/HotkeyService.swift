@@ -146,7 +146,11 @@ final class HotkeyService {
             guard let preset = PresetService.shared.presets.first(where: { $0.id == presetID }),
                   !PresetService.shared.isApplying
             else { return }
-            Task { await PresetService.shared.applyPreset(preset) }
+            Task {
+                if !(await PresetService.shared.applyPreset(preset)) {
+                    NSSound.beep()
+                }
+            }
         case .hidpiToggle:
             toggleHiDPIUnderCursor()
         case .brightness(let up):

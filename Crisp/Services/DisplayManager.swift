@@ -150,6 +150,10 @@ class DisplayManager: ObservableObject {
 
         guard !changed.isEmpty else { return }
         BrightnessService.shared.invalidateDDCTopology(for: changed)
+        for id in changed {
+            DDCService.shared.clearCache(for: id)
+            VolumeService.shared.invalidate(for: id)
+        }
     }
 
     /// Identity plus location: two identical monitors share vendor/product/serial, so

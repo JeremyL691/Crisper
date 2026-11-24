@@ -306,11 +306,21 @@ final class SettingsService: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published private(set) var shortcutAssignmentError: String? = nil
+
+    func clearShortcutAssignmentError() {
+        if shortcutAssignmentError != nil { shortcutAssignmentError = nil }
+    }
+
     /// One combo, one action: clears `shortcut` off every other row and preset holding it
     /// (Carbon refuses a second registration of the same combo), then `assign` gives it here.
     func assignStaticShortcut(_ shortcut: KeyboardShortcut?, assign: (KeyboardShortcut?) -> Void) {
+        shortcutAssignmentError = nil
         if let shortcut {
-            guard PresetService.shared.releaseShortcut(shortcut) else { return }
+            guard PresetService.shared.releaseShortcut(shortcut, reportError: false) else {
+                shortcutAssignmentError = String(localized: "Could not save presets. Try again.")
+                return
+            }
             clearStaticShortcuts(matching: shortcut)
         }
         assign(shortcut)

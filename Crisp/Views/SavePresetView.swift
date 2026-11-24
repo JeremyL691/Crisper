@@ -49,7 +49,7 @@ struct SavePresetView: View {
                 .onHover { isHovered = $0 }
                 .transition(.opacity)
             }
-            if !isShowingForm, let error = presets.operationError {
+            if !isShowingForm, !presets.isEditorOpen, let error = presets.operationError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -59,6 +59,7 @@ struct SavePresetView: View {
         // Collapse the form when the panel closes so it reopens fresh (fires while hidden).
         .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidClose)) { _ in
             isShowingForm = false
+            presets.clearOperationError()
         }
     }
 }
@@ -74,6 +75,8 @@ struct SavePresetForm: View {
     var editing: DisplayPreset? = nil
     let onClose: () -> Void
 
+    @ObservedObject private var presets = PresetService.shared
+    @State private var editorToken = UUID()
     @State private var presetName: String = ""
     @State private var selectedIcon: String = "display"
     @State private var selectedColor: String = "blue"
@@ -116,6 +119,10 @@ struct SavePresetForm: View {
         _includeConnection = State(initialValue: editing?.includesConnection
                                    ?? !PhysicalDisplayToggleService.shared.disconnected.isEmpty)
         _recordedShortcut = State(initialValue: editing?.shortcut)
+    }
+
+    private var isApplyingEdited: Bool {
+        editing.map { presets.applyingPresetID == $0.id } ?? false
     }
 
     private var nothingSelected: Bool {
@@ -321,6 +328,7 @@ struct SavePresetForm: View {
                 Button("Cancel") {
                     // Same close-while-recording gap as Save (see save()).
                     NotificationCenter.default.post(name: .crispStopShortcutRecording, object: nil)
+                    presets.clearOperationError()
                     onClose()
                 }
                     .buttonStyle(.bordered)
@@ -334,7 +342,8 @@ struct SavePresetForm: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isSaving || nothingSelected || presetName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(isSaving || isApplyingEdited || nothingSelected
+                              || presetName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(12)
@@ -347,11 +356,13 @@ struct SavePresetForm: View {
                 )
         )
         .animation(.easeInOut(duration: 0.15), value: saveError)
+        .onAppear { presets.beginEditing(editorToken) }
+        .onDisappear { presets.endEditing(editorToken) }
     }
 
     private func save() {
         let name = presetName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, !nothingSelected else { return }
+        guard !name.isEmpty, !nothingSelected, !isApplyingEdited else { return }
 
         // Stop recording first: saving re-syncs hotkeys, a no-op while suspended.
         NotificationCenter.default.post(name: .crispStopShortcutRecording, object: nil)

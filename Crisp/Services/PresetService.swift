@@ -12,6 +12,24 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     @Published var isApplying: Bool = false
     @Published var applyingPresetID: UUID? = nil
     @Published private(set) var operationError: String?
+    @Published private(set) var isEditorOpen: Bool = false
+
+    private var openEditorTokens: Set<UUID> = []
+
+    func beginEditing(_ token: UUID) {
+        openEditorTokens.insert(token)
+        if !isEditorOpen { isEditorOpen = true }
+    }
+
+    func endEditing(_ token: UUID) {
+        openEditorTokens.remove(token)
+        let open = !openEditorTokens.isEmpty
+        if isEditorOpen != open { isEditorOpen = open }
+    }
+
+    func clearOperationError() {
+        if operationError != nil { operationError = nil }
+    }
 
     /// Preset the user last applied. Shown as checked in the UI until any manual
     /// brightness/resolution/arrangement change invalidates it. Session-only.
@@ -42,16 +60,20 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         presets = SettingsService.shared.load([DisplayPreset].self, filename: filename) ?? []
     }
 
-    private func storePresets(_ updated: [DisplayPreset]) -> Bool {
+    private func storePresets(_ updated: [DisplayPreset], reportError: Bool = true) -> Bool {
         do {
             try SettingsService.shared.save(updated, filename: filename)
         } catch {
             Self.log.error("Could not save presets: \(error.localizedDescription, privacy: .public)")
-            operationError = String(localized: "Could not save presets. Try again.")
+            if reportError {
+                operationError = String(localized: "Could not save presets. Try again.")
+            }
             return false
         }
         presets = updated
-        operationError = nil
+        if reportError {
+            operationError = nil
+        }
         return true
     }
 
@@ -93,12 +115,14 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    func releaseShortcut(_ shortcut: KeyboardShortcut) -> Bool {
+    func releaseShortcut(_ shortcut: KeyboardShortcut, reportError: Bool = true) -> Bool {
         let conflicting = presets.indices.filter { presets[$0].shortcut?.sameKeys(as: shortcut) == true }
         guard !conflicting.isEmpty else { return true }
         var updated = presets
         for i in conflicting { updated[i].shortcut = nil }
-        return storePresets(updated)
+        guard storePresets(updated, reportError: reportError) else { return false }
+        HotkeyService.shared.syncRegistrations()
+        return true
     }
 
     /// Overwrites a user preset with the current display state (name, icon, and
@@ -122,8 +146,14 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     func editPreset(id: UUID, name: String, icon: String, colorName: String?,
                     captures: Set<PresetCapture>, recapture: Bool, shortcut: KeyboardShortcut?) -> Bool {
         operationError = nil
-        guard applyingPresetID != id else { return false }
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return false }
+        guard applyingPresetID != id else {
+            operationError = "Wait until this preset finishes applying before editing it."
+            return false
+        }
+        guard let index = presets.firstIndex(where: { $0.id == id }) else {
+            operationError = "This preset no longer exists."
+            return false
+        }
         var preset = presets[index]
         preset.name = name
         preset.icon = icon
@@ -206,101 +236,116 @@ final class PresetService: ObservableObject, @unchecked Sendable {
             applyingPresetID = nil
         }
 
-        let displays: [DisplayInfo]
+        let connectionOutcome: ConnectionApplyOutcome
         do {
-            displays = try await applyConnection(of: preset).get()
+            connectionOutcome = try await applyConnection(of: preset).get()
         } catch {
             activePresetID = nil
             operationError = error.description
             Self.log.error("Could not apply preset connections: \(error.description, privacy: .public)")
             return false
         }
+        let displays = connectionOutcome.displays
 
         for entry in preset.displays {
             guard let display = displays.first(where: { entry.matchesDisplay(uuid: $0.presetUUID) }),
                   display.isOnline else { continue }
-            let displayID = display.displayID
-
-            // Resolution applies only when the preset includes it (width present); the
-            // built-in is driven too, resolving to the alreadyActive no-op if unchanged.
-            if let w = entry.width, let h = entry.height, let route = entry.resolutionRoute(
-                modes: display.availableModes.map { ($0.width, $0.height, $0.isHiDPI) },
-                mirrorStops: MirroredModeService.beyondCapStops(for: display)
-            ) {
-                Self.log.info("display \(displayID): \(w)x\(h) hiDPI \(entry.isHiDPI ?? false), route \(String(describing: route), privacy: .public)")
-                switch route {
-                case .mode(let index):
-                    MirroredModeService.shared.forgetSaved(for: display)
-                    let candidate = display.availableModes[index]
-                    let preferredRate = VirtualDisplayService.shared.configuredRefreshRate(for: displayID)
-                    let mode = display.availableModes.first(where: { mode in
-                        mode.width == candidate.width && mode.height == candidate.height
-                            && mode.isHiDPI == candidate.isHiDPI
-                            && preferredRate.map { abs($0 - mode.refreshRate) < 0.5 } == true
-                    }) ?? candidate
-                    let currentMode = preferredRate == nil
-                        ? display.currentDisplayMode : DisplayMode.currentMode(for: displayID)
-                    let alreadyActive = currentMode?.width == mode.width
-                        && currentMode?.height == mode.height
-                        && currentMode?.isHiDPI == mode.isHiDPI
-                        && (preferredRate == nil || abs((currentMode?.refreshRate ?? 0) - mode.refreshRate) < 0.5)
-                    if !alreadyActive {
-                        // Unmirror first (#65) or WindowServer redirects the change to the
-                        // virtual source; a failed unmirror leaves the resolution alone.
-                        var unmirrored = true
-                        if MirroredModeService.shared.isActive(for: displayID) {
-                            unmirrored = await MirroredModeService.shared.restore(display: display)
-                        }
-                        if unmirrored, await ResolutionService.shared.setDisplayMode(mode, for: displayID) {
-                            // refreshDisplays() doesn't re-read the current mode for
-                            // already-present displays, so write it back here (as the manual
-                            // switch does) or the panel keeps showing the old resolution.
-                            display.currentDisplayMode = mode
-                        }
-                    }
-                case .mirror:
-                    // A beyond-cap size (#65) never enumerates on the physical panel;
-                    // mirror mode is the only route there.
-                    await MirroredModeService.shared.apply(display: display, width: w, height: h)
-                case .unavailable:
-                    break
-                }
-            }
-
-            // Before brightness: a reference preset fixes the panel's brightness.
-            applyColor(entry.color, to: display)
-
-            // After the mode, as the disconnect restore does, and before brightness:
-            // the switch moves brightness between DDC and software dimming.
-            if let hdr = entry.hdr, BrightnessBoostService.shared.isHDREnabled(for: display) != hdr {
-                await BrightnessBoostService.shared.setHDRPreference(hdr, for: display)
-            }
-
-            // Convert 0.0-1.0 to the 0-100 range BrightnessService uses; fades over 0.5s
-            // instead of snapping.
-            if let brightness = entry.brightness {
-                BrightnessService.shared.setBrightnessSmooth(
-                    brightness * 100.0,
-                    for: display,
-                    isAutoAdjust: false,
-                    duration: 0.5
-                )
-            }
-
-            if let x = entry.arrangementX, let y = entry.arrangementY {
-                _ = await ArrangementService.shared.setPosition(
-                    x: Int(x), y: Int(y), for: displayID
-                )
-            }
-
-            if let adjustment = entry.imageAdjustment {
-                GammaService.shared.set(adjustment, for: display, fade: 0.5)
-            }
+            await applyAttributes(of: entry, to: display)
         }
 
         await applyVirtualRefreshRates(of: preset, displays: displays)
-        activePresetID = preset.id
+        if let warning = connectionOutcome.warning {
+            operationError = warning
+            activePresetID = nil
+        } else {
+            activePresetID = preset.id
+        }
         return true
+    }
+
+    private func applyAttributes(of entry: DisplayPresetEntry, to display: DisplayInfo) async {
+        let displayID = display.displayID
+
+        // Resolution applies only when the preset includes it (width present); the
+        // built-in is driven too, resolving to the alreadyActive no-op if unchanged.
+        if let w = entry.width, let h = entry.height, let route = entry.resolutionRoute(
+            modes: display.availableModes.map { ($0.width, $0.height, $0.isHiDPI) },
+            mirrorStops: MirroredModeService.beyondCapStops(for: display)
+        ) {
+            Self.log.info("display \(displayID): \(w)x\(h) hiDPI \(entry.isHiDPI ?? false), route \(String(describing: route), privacy: .public)")
+            switch route {
+            case .mode(let index):
+                MirroredModeService.shared.forgetSaved(for: display)
+                let candidate = display.availableModes[index]
+                let preferredRate = VirtualDisplayService.shared.configuredRefreshRate(for: displayID)
+                let mode = display.availableModes.first(where: { mode in
+                    mode.width == candidate.width && mode.height == candidate.height
+                        && mode.isHiDPI == candidate.isHiDPI
+                        && preferredRate.map { abs($0 - mode.refreshRate) < 0.5 } == true
+                }) ?? candidate
+                let currentMode = preferredRate == nil
+                    ? display.currentDisplayMode : DisplayMode.currentMode(for: displayID)
+                let alreadyActive = currentMode?.width == mode.width
+                    && currentMode?.height == mode.height
+                    && currentMode?.isHiDPI == mode.isHiDPI
+                    && (preferredRate == nil || abs((currentMode?.refreshRate ?? 0) - mode.refreshRate) < 0.5)
+                if !alreadyActive {
+                    // Unmirror first (#65) or WindowServer redirects the change to the
+                    // virtual source; a failed unmirror leaves the resolution alone.
+                    var unmirrored = true
+                    if MirroredModeService.shared.isActive(for: displayID) {
+                        unmirrored = await MirroredModeService.shared.restore(display: display)
+                    }
+                    if unmirrored, await ResolutionService.shared.setDisplayMode(mode, for: displayID) {
+                        // refreshDisplays() doesn't re-read the current mode for
+                        // already-present displays, so write it back here (as the manual
+                        // switch does) or the panel keeps showing the old resolution.
+                        display.currentDisplayMode = mode
+                    }
+                }
+            case .mirror:
+                // A beyond-cap size (#65) never enumerates on the physical panel;
+                // mirror mode is the only route there.
+                await MirroredModeService.shared.apply(display: display, width: w, height: h)
+            case .unavailable:
+                break
+            }
+        }
+
+        // Before brightness: a reference preset fixes the panel's brightness.
+        applyColor(entry.color, to: display)
+
+        // After the mode, as the disconnect restore does, and before brightness:
+        // the switch moves brightness between DDC and software dimming.
+        if let hdr = entry.hdr, BrightnessBoostService.shared.isHDREnabled(for: display) != hdr {
+            await BrightnessBoostService.shared.setHDRPreference(hdr, for: display)
+        }
+
+        // Convert 0.0-1.0 to the 0-100 range BrightnessService uses; fades over 0.5s
+        // instead of snapping.
+        if let brightness = entry.brightness {
+            BrightnessService.shared.setBrightnessSmooth(
+                brightness * 100.0,
+                for: display,
+                isAutoAdjust: false,
+                duration: 0.5
+            )
+        }
+
+        if let x = entry.arrangementX, let y = entry.arrangementY {
+            _ = await ArrangementService.shared.setPosition(
+                x: Int(x), y: Int(y), for: displayID
+            )
+        }
+
+        if let adjustment = entry.imageAdjustment {
+            GammaService.shared.set(adjustment, for: display, fade: 0.5)
+        }
+    }
+
+    private struct ConnectionApplyOutcome {
+        let displays: [DisplayInfo]
+        let warning: String?
     }
 
     private func applyVirtualRefreshRates(of preset: DisplayPreset, displays: [DisplayInfo]) async {
@@ -317,7 +362,9 @@ final class PresetService: ObservableObject, @unchecked Sendable {
     /// Turns displays on and off before the other settings (#211), so those land on the
     /// display set the preset was saved with. Returns the display list after the change.
     /// Smart Dummy is autonomous (Auto-Yield + AC-only), so applying a preset never toggles it.
-    private func applyConnection(of preset: DisplayPreset) async -> Result<[DisplayInfo], PhysicalDisplayToggleService.ToggleError> {
+    private func applyConnection(
+        of preset: DisplayPreset
+    ) async -> Result<ConnectionApplyOutcome, PhysicalDisplayToggleService.ToggleError> {
         let toggle = PhysicalDisplayToggleService.shared
         let virtual = VirtualDisplayService.shared
         let virtualUUIDs = Set(virtual.configs.map { CrispVirtualDisplayIdentity.canonicalUUID($0.displayUUID) })
@@ -328,14 +375,22 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         )
         let reconnect = plan.reconnect.filter { !virtualUUIDs.contains($0) }
         let disconnect = plan.disconnect.filter { !virtualUUIDs.contains($0) }
+        var warning: String? = nil
         // An unsuccessful reconnect must not be followed by disconnecting the fallback screen.
         for uuid in reconnect {
             let storedUUID = toggle.disconnected.first {
                 CrispVirtualDisplayIdentity.canonicalUUID($0.uuid) == uuid
             }?.uuid ?? uuid
             if case .failure(let error) = await InputSwitchService.shared.reconnect(uuid: storedUUID) {
-                toggle.displayManager?.refreshDisplays()
-                return .failure(error)
+                if case .inputRestoreFailed = error {
+                    // Framebuffer is already online and removed from `disconnected`; keep applying
+                    // preset attributes and surface the DDC failure as a non-fatal warning.
+                    warning = warning ?? error.description
+                    Self.log.warning("Preset reconnect DDC warning for \(uuid, privacy: .public): \(error.description, privacy: .public)")
+                } else {
+                    toggle.displayManager?.refreshDisplays()
+                    return .failure(error)
+                }
             }
         }
         if !reconnect.isEmpty {
@@ -348,10 +403,18 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         for uuid in disconnect {
             guard let display = DisplayManagerAccessor.shared.displays.first(where: {
                 CrispVirtualDisplayIdentity.canonicalUUID($0.displayUUID) == uuid && $0.isOnline
-            }) else { return .failure(.displayNotFound) }
+            }) else { continue }
             if case .failure(let error) = await toggle.disconnect(display, fromPreset: true) {
-                toggle.displayManager?.refreshDisplays()
-                return .failure(error)
+                switch error {
+                case .wouldLeaveNoActiveDisplay, .unsupportedPlatform:
+                    // Refused/unsupported disconnect is non-fatal: keep online displays lit and
+                    // still apply resolution, color, HDR, brightness, arrangement, and gamma.
+                    warning = warning ?? error.description
+                    Self.log.notice("Skipping preset disconnect for \(uuid, privacy: .public): \(error.description, privacy: .public)")
+                default:
+                    toggle.displayManager?.refreshDisplays()
+                    return .failure(error)
+                }
             }
         }
         toggle.displayManager?.refreshDisplays()
@@ -361,7 +424,7 @@ final class PresetService: ObservableObject, @unchecked Sendable {
         for display in refreshed where reconnect.contains(CrispVirtualDisplayIdentity.canonicalUUID(display.displayUUID)) {
             await display.loadDetails()
         }
-        return .success(refreshed)
+        return .success(ConnectionApplyOutcome(displays: refreshed, warning: warning))
     }
 
     // MARK: - Capture

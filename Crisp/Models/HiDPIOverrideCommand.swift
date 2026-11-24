@@ -13,21 +13,25 @@ enum HiDPIOverrideCommand {
         let hadFile: Bool
     }
 
-    static func install(vendor: UInt32, product: UInt32, scaledModes: [Data], previous: Data? = nil) throws -> String {
+    static func install(vendor: UInt32, product: UInt32, scaledModes: [Data], previous: Data? = nil) throws -> String? {
         guard !scaledModes.isEmpty, scaledModes.count <= 4_096,
               scaledModes.allSatisfy({ $0.count == 8 }) else { throw InvalidModes() }
         var plist = try previous.map(dictionary) ?? [:]
+        let currentModes = try modes(in: plist)
+        if previous != nil, Set(scaledModes).isSubset(of: Set(currentModes)) {
+            // Every requested mode is already present; avoid stripping ownershipKey or doing a no-op rewrite.
+            return nil
+        }
         let ownership = try stripOwnedModes(from: &plist)
         let hadModes = plist[modesKey] != nil
         let existing = try modes(in: plist)
         var seen = Set(existing)
         let added = scaledModes.filter { seen.insert($0).inserted }
-        if !added.isEmpty {
-            plist[modesKey] = existing + added
-            plist[ownershipKey] = try PropertyListEncoder().encode(
-                Ownership(modes: added, hadModes: hadModes, hadFile: ownership?.hadFile ?? (previous != nil))
-            )
-        }
+        guard !added.isEmpty else { return nil }
+        plist[modesKey] = existing + added
+        plist[ownershipKey] = try PropertyListEncoder().encode(
+            Ownership(modes: added, hadModes: hadModes, hadFile: ownership?.hadFile ?? (previous != nil))
+        )
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         return try update(vendor: vendor, product: product, previous: previous, replacement: data)
     }
@@ -90,7 +94,7 @@ enum HiDPIOverrideCommand {
             check = "[ ! -e '\(destination)' ]"
         }
         let guardDestination = """
-        if ! { [ ! -L '\(destination)' ] && \(check); }; then
+        if ! { [ ! -L '\(directory)' ] && [ ! -L '\(destination)' ] && \(check); }; then
             echo 'The display override changed. Try again.' >&2
             exit 1
         fi

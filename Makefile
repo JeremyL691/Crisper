@@ -73,6 +73,8 @@ typecheck-x86:
 	swiftc -typecheck -target x86_64-apple-macos14.0 -swift-version 6 \
 		-parse-as-library -import-objc-header Crisp/Crisp-Bridging-Header.h \
 		$(SWIFT_SOURCES)
+	swiftc -typecheck -target x86_64-apple-macos14.0 -swift-version 6 \
+		Sources/crispctl/*.swift Crisp/Models/CrispControlModel.swift Crisp/Models/BrightnessKeySteps.swift
 
 check: lint test typecheck-x86 loc-check
 	@echo "check passed: lint clean, tests green, x86_64 slice typechecks, localization keys complete"

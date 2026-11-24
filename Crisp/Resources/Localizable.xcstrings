@@ -54,13 +54,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "/usr/local/bin/crisperctl 已有文件或链接。"
+            "value" : "/usr/local/bin/crisperctl 已存在文件、文件夹或链接。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "/usr/local/bin/crisperctl 已有檔案或連結。"
+            "value" : "/usr/local/bin/crisperctl 已存在檔案、資料夾或連結。"
           }
         }
       }

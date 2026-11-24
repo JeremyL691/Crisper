@@ -137,8 +137,6 @@ final class CrispControlServer {
     private func reply(to request: Data) async -> Data {
         let managedDisplays = displayManager.displays
         let boostService = BrightnessBoostService.shared
-        let incompleteReconnects = Set(PhysicalDisplayToggleService.shared.disconnected.lazy
-            .filter { $0.reconnectRequested == true && $0.returnInput != nil }.map(\.uuid))
         let displays = managedDisplays.map { display in
             let resolution = display.currentDisplayMode.map { mode in
                 CrispControlResolution(
@@ -159,7 +157,7 @@ final class CrispControlServer {
                 uuid: display.displayUUID,
                 resolution: resolution,
                 brightnessBackend: BrightnessService.shared.brightnessBackend(for: display),
-                connected: !incompleteReconnects.contains(display.displayUUID)
+                connected: true
             )
         }
         // Plus the displays Crisp is holding disconnected. They are gone from
@@ -374,7 +372,9 @@ final class CrispControlServer {
             return CrispControlModel.encode(.failure("another preset is being applied; try again"))
         }
         guard await service.applyPreset(preset) else {
-            return CrispControlModel.encode(.failure("could not apply the preset's display connections"))
+            return CrispControlModel.encode(.failure(
+                service.operationError ?? "could not apply the preset's display connections"
+            ))
         }
         // applyPreset skips a display that is not online without a word; say which. Read after
         // the apply, which can turn displays on and off (#211); one the preset turns off is not skipped.

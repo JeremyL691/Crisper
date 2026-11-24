@@ -525,8 +525,13 @@ enum CrispControlModel {
             guard hasDisplaySelector(request) else {
                 return .init(.failure("display is required"), nil, nil, nil)
             }
-            guard let display = target(of: request, in: displays),
-                  let state = brightnessBoostState(display.id) else {
+            guard let display = target(of: request, in: displays) else {
+                return .init(.failure("display not found"), nil, nil, nil)
+            }
+            guard display.connected != false else {
+                return .init(.failure("display is not connected"), nil, nil, nil)
+            }
+            guard let state = brightnessBoostState(display.id) else {
                 return .init(.failure("display not found"), nil, nil, nil)
             }
             return .init(.success(brightnessBoost: state), nil, nil, nil)
@@ -536,6 +541,9 @@ enum CrispControlModel {
         }
         guard let display = target(of: request, in: displays) else {
             return .init(.failure("display not found"), nil, nil, nil)
+        }
+        guard display.connected != false else {
+            return .init(.failure("display is not connected"), nil, nil, nil)
         }
         return .init(.success(), nil, .init(displayID: display.id, enabled: enabled), nil)
     }
@@ -677,6 +685,9 @@ enum CrispControlModel {
         guard let display = target(of: request, in: displays) else {
             return .init(.failure("display not found"), nil, nil, nil)
         }
+        guard display.connected != false else {
+            return .init(.failure("display is not connected"), nil, nil, nil)
+        }
         guard !display.isBuiltin else {
             return .init(
                 .failure(
@@ -720,6 +731,9 @@ enum CrispControlModel {
         }
         guard let display = target(of: request, in: displays) else {
             return .init(.failure("display not found"), nil, nil, nil)
+        }
+        guard display.connected != false else {
+            return .init(.failure("display is not connected"), nil, nil, nil)
         }
         if value > 100 {
             guard let state = brightnessBoostState(display.id), state.enabled else {
@@ -1020,21 +1034,37 @@ enum CrispControlCLIModel {
     static func parseInvocation(arguments: [String]) -> (json: Bool, result: ParseResult) {
         let separator = arguments.firstIndex(of: "--")
         let options = arguments[..<(separator ?? arguments.endIndex)]
-        let command = options.filter { $0 != "--json" }
+        let preDash = options.filter { $0 != "--json" }
         let json = options.contains("--json")
-        guard let separator else { return (json, parse(arguments: command)) }
+        guard let separator else { return (json, parse(arguments: preDash)) }
 
-        let literalCommand = command + arguments.dropFirst(separator + 1)
+        let postDash = Array(arguments.dropFirst(separator + 1))
+        if let help = helpRequest(preDash, allowBare: postDash.isEmpty) {
+            return (json, help)
+        }
+        let literalCommand = preDash + postDash
+        if preDash.first == "skill", let skill = skillRequest(literalCommand) {
+            return (json, skill)
+        }
         if let request = matchedRequest(literalCommand) { return (json, .request(request)) }
         return (json, .failure(usageMessage(for: literalCommand)))
     }
-    private static func helpRequest(_ arguments: [String]) -> ParseResult? {
+    private static func helpRequest(_ arguments: [String], allowBare: Bool = true) -> ParseResult? {
         let helpWords: Set<String> = ["help", "--help", "-h"]
-        if arguments.isEmpty || (arguments.count == 1 && helpWords.contains(arguments[0])) { return .help(.all) }
+        if allowBare && arguments.isEmpty { return .help(.all) }
+        if arguments.count == 1 && helpWords.contains(arguments[0]) { return .help(.all) }
         if arguments == ["version"] || arguments == ["--version"] { return .version }
-        guard let group = Group(rawValue: arguments[0]) else { return nil }
-        if arguments.count == 1 || (arguments.count == 2 && helpWords.contains(arguments[1])) { return .help(.group(group)) }
-        guard let last = arguments.last, last == "--help" || last == "-h" else { return nil }
+        guard let first = arguments.first else { return nil }
+        guard let group = Group(rawValue: first) else {
+            if first != "skill", arguments.contains(where: { $0 == "--help" || $0 == "-h" }) {
+                return .help(.all)
+            }
+            return nil
+        }
+        if (allowBare && arguments.count == 1) || (arguments.count == 2 && helpWords.contains(arguments[1])) {
+            return .help(.group(group))
+        }
+        guard arguments.contains(where: { $0 == "--help" || $0 == "-h" }) else { return nil }
         // The longest command whose literal words open the invocation gets its own page.
         let opened = entries.filter { $0.group == group && arguments.starts(with: $0.words) }
             .max { $0.words.count < $1.words.count }

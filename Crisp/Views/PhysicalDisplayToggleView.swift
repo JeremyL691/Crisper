@@ -125,36 +125,41 @@ private struct DisconnectedDisplayRow: View {
     @ObservedObject private var errors = ConnectionErrors.shared
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Dim while inactive; brightens on hover to cue that a click reconnects it.
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                MenuItemIcon(systemName: "rectangle.slash", color: .secondary, active: false)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(record.name).font(.body).lineLimit(1)
-                    Text(verbatim: "\(record.width)×\(record.height)")
-                        .font(.caption2).foregroundColor(.secondary)
-                    if let message = errors.messages[record.uuid] {
-                        Text(message).font(.caption).foregroundStyle(.red)
+                // Dim while inactive; brightens on hover to cue that a click reconnects it.
+                HStack(spacing: 8) {
+                    MenuItemIcon(systemName: "rectangle.slash", color: .secondary, active: false)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(record.name).font(.body).lineLimit(1)
+                        Text(verbatim: "\(record.width)×\(record.height)")
+                            .font(.caption2).foregroundColor(.secondary)
                     }
                 }
+                .opacity(isHovered ? 1 : 0.6)
+
+                Spacer()
+
+                if busy {
+                    ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
+                } else {
+                    // Liquid-Glass accent capsule; reads as the affordance since the
+                    // whole row is the tap target.
+                    Text("Reconnect")
+                        .font(.caption).fontWeight(.medium)
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule().fill(Color.accentColor.opacity(isHovered ? 0.22 : 0.12))
+                        )
+                }
             }
-            .opacity(isHovered ? 1 : 0.6)
 
-            Spacer()
-
-            if busy {
-                ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
-            } else {
-                // Liquid-Glass accent capsule; reads as the affordance since the
-                // whole row is the tap target.
-                Text("Reconnect")
-                    .font(.caption).fontWeight(.medium)
-                    .foregroundColor(.accentColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule().fill(Color.accentColor.opacity(isHovered ? 0.22 : 0.12))
-                    )
+            if let message = errors.messages[record.uuid] {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
         .padding(.horizontal, 12)
@@ -168,6 +173,7 @@ private struct DisconnectedDisplayRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(record.name), disconnected")
+        .accessibilityValue(Text(verbatim: errors.messages[record.uuid] ?? ""))
         .accessibilityHint("Reconnect this display")
         .accessibilityAddTraits(.isButton)
     }

@@ -32,7 +32,10 @@ enum DDCServiceMatcher {
                 return true
             }
             if let location, let liveLocation = live.location {
-                return location == liveLocation && !sameModel.contains { $0.location == liveLocation }
+                if location == liveLocation {
+                    return !sameModel.contains { $0.location == liveLocation }
+                }
+                return sameModel.isEmpty
             }
             return sameModel.isEmpty
         }

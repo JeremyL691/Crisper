@@ -101,24 +101,31 @@ final class PhysicalDisplayToggleService: ObservableObject {
     /// it does not send a second change into the pending one.
     private var awaitingLateCommit: Set<String> = []
 
-    private func pendingSoftReconnectUUIDs() -> [String] {
-        UserDefaults.standard.stringArray(forKey: softReconnectPendingKey) ?? []
+    private typealias PendingSoftReconnect = PhysicalDisplayReconnectPolicy.PendingSoftReconnect
+
+    private func pendingSoftReconnects() -> [PendingSoftReconnect] {
+        PhysicalDisplayReconnectPolicy.decodePendingSoftReconnects(
+            data: UserDefaults.standard.data(forKey: softReconnectPendingKey),
+            legacyUUIDs: UserDefaults.standard.stringArray(forKey: softReconnectPendingKey)
+        )
     }
 
-    private func addPendingSoftReconnect(_ displayUUID: String) {
-        var pending = pendingSoftReconnectUUIDs()
-        guard !pending.contains(displayUUID) else { return }
-        pending.append(displayUUID)
-        UserDefaults.standard.set(pending, forKey: softReconnectPendingKey)
+    private func savePendingSoftReconnects(_ pending: [PendingSoftReconnect]) {
+        if pending.isEmpty {
+            UserDefaults.standard.removeObject(forKey: softReconnectPendingKey)
+        } else if let data = try? JSONEncoder().encode(pending) {
+            UserDefaults.standard.set(data, forKey: softReconnectPendingKey)
+        }
+    }
+
+    private func addPendingSoftReconnect(_ displayUUID: String, displayID: CGDirectDisplayID) {
+        var pending = pendingSoftReconnects().filter { $0.uuid != displayUUID }
+        pending.append(PendingSoftReconnect(uuid: displayUUID, displayID: displayID))
+        savePendingSoftReconnects(pending)
     }
 
     private func removePendingSoftReconnect(_ displayUUID: String) {
-        let pending = pendingSoftReconnectUUIDs().filter { $0 != displayUUID }
-        if pending.isEmpty {
-            UserDefaults.standard.removeObject(forKey: softReconnectPendingKey)
-        } else {
-            UserDefaults.standard.set(pending, forKey: softReconnectPendingKey)
-        }
+        savePendingSoftReconnects(pendingSoftReconnects().filter { $0.uuid != displayUUID })
     }
 
     // MARK: - Logging
@@ -266,12 +273,18 @@ final class PhysicalDisplayToggleService: ObservableObject {
         return ScreenCount.portCap(nodes)
     }
 
+    private func cgUUID(for displayID: CGDirectDisplayID) -> String? {
+        guard let cf = CGDisplayCreateUUIDFromDisplayID(displayID),
+              let s = CFUUIDCreateString(nil, cf.takeRetainedValue()) else { return nil }
+        return s as String
+    }
+
+    private func enumeratedDisplays() -> [PhysicalDisplayReconnectPolicy.EnumeratedDisplay] {
+        allDisplaysIncludingDisabled().map { .init(id: $0, cgUUID: cgUUID(for: $0)) }
+    }
+
     private func uuid(for displayID: CGDirectDisplayID) -> String {
-        if let cf = CGDisplayCreateUUIDFromDisplayID(displayID),
-           let s = CFUUIDCreateString(nil, cf.takeRetainedValue()) {
-            return s as String
-        }
-        return "id-\(displayID)"
+        cgUUID(for: displayID) ?? "id-\(displayID)"
     }
 
     // MARK: - Disconnect / Reconnect
@@ -368,26 +381,34 @@ final class PhysicalDisplayToggleService: ObservableObject {
     struct DisplayState {
         let id: CGDirectDisplayID
         let mode: CGDisplayMode
+        let isVariableRefresh: Bool?
         let rotation: Double
         let hdr: Bool?
     }
 
-    /// Every online display's mode/rotation/HDR except the ones about to be taken off, so
-    /// they can be restored after WindowServer re-applies its per-arrangement state (issue
-    /// #108). See docs/display-notes.md (restoreStates).
     private func currentStates(excluding displayIDs: Set<CGDirectDisplayID> = []) -> [DisplayState] {
         let virtual = VirtualDisplayService.shared
         return onlineDisplayIDs()
             .filter { !displayIDs.contains($0) && !virtual.isVirtualDisplay($0) }
             .compactMap { id in
-                CGDisplayCopyDisplayMode(id).map {
-                    DisplayState(id: id, mode: $0, rotation: CGDisplayRotation(id), hdr: liveHDR(id))
+                CGDisplayCopyDisplayMode(id).map { mode in
+                    DisplayState(
+                        id: id, mode: mode,
+                        isVariableRefresh: currentIsVariableRefresh(for: id, modeID: mode.ioDisplayModeID),
+                        rotation: CGDisplayRotation(id), hdr: liveHDR(id)
+                    )
                 }
             }
     }
 
-    /// The HDR switch as it stands, or nil if this display has none. Read through
-    /// DisplayManager for the DisplayInfo the HDR API needs.
+    private func currentIsVariableRefresh(for displayID: CGDirectDisplayID, modeID: Int32) -> Bool? {
+        if let cached = displayManager?.displays.first(where: { $0.displayID == displayID })?.currentDisplayMode,
+           cached.id == modeID {
+            return cached.isVariableRefresh
+        }
+        return DisplayMode.currentMode(for: displayID)?.isVariableRefresh
+    }
+
     private func liveHDR(_ displayID: CGDirectDisplayID) -> Bool? {
         guard let display = displayManager?.displays.first(where: { $0.displayID == displayID }),
               BrightnessBoostService.shared.isEligibleForHDRToggle(display) else { return nil }
@@ -395,9 +416,12 @@ final class PhysicalDisplayToggleService: ObservableObject {
     }
 
     /// The same mode in the menu's list, hidden HiDPI variants included.
-    private static func same(_ mode: CGDisplayMode) -> (DisplayMode) -> Bool {
-        { $0.width == mode.width && $0.height == mode.height && $0.pixelWidth == mode.pixelWidth
-            && $0.pixelHeight == mode.pixelHeight && abs($0.refreshRate - mode.refreshRate) < 1 }
+    private static func same(_ mode: CGDisplayMode, isVariableRefresh: Bool? = nil) -> (DisplayMode) -> Bool {
+        {
+            $0.width == mode.width && $0.height == mode.height && $0.pixelWidth == mode.pixelWidth
+                && $0.pixelHeight == mode.pixelHeight && abs($0.refreshRate - mode.refreshRate) < 1
+                && (isVariableRefresh == nil || $0.isVariableRefresh == isVariableRefresh)
+        }
     }
 
     private func restoreStates(_ states: [DisplayState]) async {
@@ -426,7 +450,13 @@ final class PhysicalDisplayToggleService: ObservableObject {
             let id = state.id
             if let current = CGDisplayCopyDisplayMode(id),
                current.ioDisplayModeID != state.mode.ioDisplayModeID {
-                let restored = await ResolutionService.shared.reapply(on: id, where: Self.same(state.mode)) ?? false
+                let restored: Bool
+                if let vrr = state.isVariableRefresh,
+                   let exact = await ResolutionService.shared.reapply(on: id, where: Self.same(state.mode, isVariableRefresh: vrr)) {
+                    restored = exact
+                } else {
+                    restored = await ResolutionService.shared.reapply(on: id, where: Self.same(state.mode)) ?? false
+                }
                 Self.log.notice("display \(id, privacy: .public) moved to \(current.width, privacy: .public)x\(current.height, privacy: .public) after the disconnect, restoring \(state.mode.width, privacy: .public)x\(state.mode.height, privacy: .public) @\(Int(state.mode.refreshRate), privacy: .public): \(restored ? "ok" : "failed", privacy: .public)")
             }
             let rotation = CGDisplayRotation(id)
@@ -462,33 +492,56 @@ final class PhysicalDisplayToggleService: ObservableObject {
               reconnectInFlight.insert(uuid).inserted else { return .failure(.timedOut) }
         defer { reconnectInFlight.remove(uuid) }
         let record = disconnected[index]
-        if byUser, record.reconnectRequested != true {
-            disconnected[index].reconnectRequested = true
-            saveDesired()
+        if onlineID(for: uuid) == nil {
+            guard let targetID = reconnectTarget(for: record, rescuingBlackout: !byUser) else {
+                return .failure(.displayNotFound)
+            }
+            let prevRequested = setReconnectRequestedIfNeeded(uuid: uuid, byUser: byUser)
+            Self.log.notice("reconnect requested: \(uuid, privacy: .public) id \(targetID, privacy: .public)")
+            let result = await setEnabled(true, displayID: targetID)
+            if case .failure(.timedOut) = result {
+                watchLateReconnect(uuid, byUser: byUser)
+                return .failure(.timedOut)
+            }
+            guard case .success = result else {
+                restoreReconnectRequested(uuid: uuid, previous: prevRequested)
+                return result
+            }
+            guard await verifyBackOnline(uuid: uuid, timeout: 2.0) else {
+                watchLateReconnect(uuid, byUser: byUser)
+                return .failure(.timedOut)
+            }
         }
         if byUser, record.isBuiltin == true, SettingsService.shared.disconnectBuiltinWhenDocked {
             standDownUntilUndock = true
         }
-        if onlineID(for: uuid) == nil {
-            guard let targetID = reconnectTarget(for: record, rescuingBlackout: !byUser)
-            else { return .failure(.displayNotFound) }
-            Self.log.notice("reconnect requested: \(uuid, privacy: .public) id \(targetID, privacy: .public)")
-            let result = await setEnabled(true, displayID: targetID)
-            if case .failure(.timedOut) = result, !byUser { watchLateReconnect(uuid) }
-            guard case .success = result else { return result }
-            guard await verifyBackOnline(uuid: uuid, timeout: 2.0) else {
-                if !byUser { watchLateReconnect(uuid) }
-                return .failure(.timedOut)
-            }
-        }
-        // A DDC retry may find the framebuffer already enabled.
+        var inputRestoreFailed = false
         if byUser, let returnInput = record.returnInput {
-            guard let id = onlineID(for: uuid),
-                  await DDCService.shared.writeInputAfterReconnect(displayID: id, value: returnInput)
-            else { return .failure(.inputRestoreFailed) }
+            let restored: Bool
+            if let id = onlineID(for: uuid) {
+                restored = await DDCService.shared.writeInputAfterReconnect(displayID: id, value: returnInput)
+            } else {
+                restored = false
+            }
+            inputRestoreFailed = !restored
         }
         completeReconnect(uuid)
-        return .success(())
+        return inputRestoreFailed ? .failure(.inputRestoreFailed) : .success(())
+    }
+
+    private func setReconnectRequestedIfNeeded(uuid: String, byUser: Bool) -> Bool?? {
+        guard byUser, let idx = disconnected.firstIndex(where: { $0.uuid == uuid }),
+              disconnected[idx].reconnectRequested != true else { return nil }
+        let previous = disconnected[idx].reconnectRequested
+        disconnected[idx].reconnectRequested = true
+        saveDesired()
+        return .some(previous)
+    }
+
+    private func restoreReconnectRequested(uuid: String, previous: Bool??) {
+        guard let previous, let idx = disconnected.firstIndex(where: { $0.uuid == uuid }) else { return }
+        disconnected[idx].reconnectRequested = previous
+        saveDesired()
     }
 
     private func completeReconnect(_ uuid: String) {
@@ -504,23 +557,22 @@ final class PhysicalDisplayToggleService: ObservableObject {
         record.isBuiltin ?? (CGDisplayIsBuiltin(id) == 1)
     }
 
-    /// Finds the current CGDirectDisplayID for a disconnected record by matching its UUID
-    /// across the full (incl. disabled) display list.
     private func resolveCurrentID(for record: DisconnectedDisplay) -> CGDirectDisplayID? {
-        allDisplaysIncludingDisabled().first { uuid(for: $0) == record.uuid }
+        allDisplaysIncludingDisabled().first { cgUUID(for: $0) == record.uuid }
     }
 
     private func reconnectTarget(for record: DisconnectedDisplay, rescuingBlackout: Bool) -> CGDirectDisplayID? {
-        let enumeratedIDs = allDisplaysIncludingDisabled()
-        if let currentID = enumeratedIDs.first(where: { uuid(for: $0) == record.uuid }) {
-            return currentID
-        }
-        // SkyLight can hide still-attached disabled displays during a blackout. Use
-        // the saved ID only for rescue, and only if it isn't enumerated as another display.
-        guard rescuingBlackout, !screensAsleep, phantomAwareActiveDisplayCount() == 0,
-              !enumeratedIDs.contains(record.displayID), !onlineDisplayIDs().contains(record.displayID)
-        else { return nil }
-        return record.displayID
+        let otherDisconnectedIDs = Set(disconnected.lazy.filter { $0.uuid != record.uuid }.map(\.displayID))
+        return PhysicalDisplayReconnectPolicy.resolveTargetID(
+            recordDisplayID: record.displayID,
+            recordUUID: record.uuid,
+            enumerated: enumeratedDisplays(),
+            onlineIDs: onlineDisplayIDs(),
+            otherDisconnectedIDs: otherDisconnectedIDs,
+            rescuingBlackout: rescuingBlackout,
+            screensAsleep: screensAsleep,
+            activeDisplayCount: rescuingBlackout ? phantomAwareActiveDisplayCount() : 0
+        )
     }
 
     /// Safety net for softReconnect's re-enable retries all failing: sweeps every SLS-disabled
@@ -583,29 +635,23 @@ final class PhysicalDisplayToggleService: ObservableObject {
     }()
 
     /// Throwaway virtual display held while blinking a portable's sole active display, to
-    /// block Clamshell Sleep (see softReconnect). Fixed product/serial so macOS doesn't
-    /// re-prompt "what to show" on every blink. nil unless it verifiably comes online.
+    /// block Clamshell Sleep (see docs/display-notes.md, softReconnect).
     private func makeBlinkSleepGuard() async -> CGVirtualDisplay? {
-        let w = 1920, h = 1080
-        let ppi = 110.0
+        let w = 1920, h = 1080, ppi = 110.0
         let descriptor = CGVirtualDisplayDescriptor()
-        descriptor.sizeInMillimeters = CGSize(width: Double(w) / ppi * 25.4,
-                                              height: Double(h) / ppi * 25.4)
+        descriptor.sizeInMillimeters = CGSize(width: Double(w) / ppi * 25.4, height: Double(h) / ppi * 25.4)
         descriptor.maxPixelsWide = UInt32(w)
         descriptor.maxPixelsHigh = UInt32(h)
         descriptor.name = "Crisp Blink Guard"
         descriptor.vendorID = VirtualDisplayService.crispVirtualVendorID
         descriptor.productID = 0xB11C
         descriptor.serialNum = 0xB11C
-        // DO NOT set queue or color primaries (see VirtualDisplayService.create).
         guard let vd = CGVirtualDisplay(descriptor: descriptor) else { return nil }
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = false
         let mode: CGVirtualDisplayMode = CGVirtualDisplayMode(width: UInt(w), height: UInt(h), refreshRate: 60.0)
         settings.modes = [mode]
-        let applied: Bool = await CGHelpers.runWithTimeout(seconds: 10, fallback: false) {
-            vd.apply(settings)
-        }
+        let applied: Bool = await CGHelpers.runWithTimeout(seconds: 10, fallback: false) { vd.apply(settings) }
         guard applied, vd.displayID != kCGNullDirectDisplay else { return nil }
         for _ in 0..<20 {
             if onlineDisplayIDs().contains(vd.displayID) { return vd }
@@ -636,9 +682,9 @@ final class PhysicalDisplayToggleService: ObservableObject {
             saveDesired()
             return
         }
-        // A live blink or reconnect is already putting this display back online on purpose.
-        for record in resurfaced where record.reconnectRequested == true && record.returnInput == nil
-            && !reconnectInFlight.contains(record.uuid) {
+        for record in resurfaced where record.reconnectRequested == true
+            && !reconnectInFlight.contains(record.uuid)
+            && !awaitingLateCommit.contains(record.uuid) {
             completeReconnect(record.uuid)
         }
         let pending = resurfaced.filter {
@@ -687,18 +733,19 @@ final class PhysicalDisplayToggleService: ObservableObject {
         Task { [weak self] in await self?.restoreStates(states) }
     }
 
-    /// One display's half of reconcile: put it back the way the user left it, or forget it.
     private func reapplyRemembered(_ recordUUID: String) async {
         guard !reconnectInFlight.contains(recordUUID) else { return }
-        guard let liveID = onlineDisplayIDs().first(where: { uuid(for: $0) == recordUUID })
-        else { return }  // gone again by itself; the record still stands for next time
+        guard let liveID = onlineDisplayIDs().first(where: { uuid(for: $0) == recordUUID }) else { return }
+        let liveIdentity: DDCServiceMatcher.Identity? = CGDisplayIsBuiltin(liveID) == 1 ? nil : .init(
+            vendor: CGDisplayVendorNumber(liveID), product: CGDisplayModelNumber(liveID),
+            serial: CGDisplaySerialNumber(liveID), location: DDCService.shared.channelLocation(for: liveID)
+        )
         var refused = wouldLeaveNoActiveDisplay(liveID)
         var holdingPreMountedSmartDummy = false
         if !refused && CGDisplayIsOnline(liveID) != 0 && onlinePhysicalDisplayCount() <= 1 {
             let smartDummy = VirtualDisplayService.shared
             if !smartDummy.isSmartDummyMounted {
-                let preMounted = await smartDummy.mountBeforeLastPhysicalDisconnect()
-                if preMounted {
+                if await smartDummy.mountBeforeLastPhysicalDisconnect() {
                     holdingPreMountedSmartDummy = true
                 } else {
                     refused = true
@@ -706,148 +753,111 @@ final class PhysicalDisplayToggleService: ObservableObject {
             }
         }
         defer {
-            if holdingPreMountedSmartDummy {
-                VirtualDisplayService.shared.releaseLastPhysicalDisconnectHold()
-            }
+            if holdingPreMountedSmartDummy { VirtualDisplayService.shared.releaseLastPhysicalDisconnectHold() }
         }
         Self.log.notice("remembered disconnect for \(recordUUID, privacy: .public) id \(liveID, privacy: .public): \(refused ? "refused, it is the last active display" : "re-applying", privacy: .public)")
         var stillOnline = true
         var timedOut = false
         if !refused {
-            // Same arrangement-move risk as disconnect() (#108); restore targets the modes
-            // from before the display resurfaced (baselineModes), not the ones its own enable produced.
-            if case .failure(.timedOut) = await setEnabled(false, displayID: liveID) {
-                timedOut = true
-            }
-            // Started before the verify below (which can hold for seconds) so the visible flip
-            // stays short; a no-op if nothing actually moved.
+            if case .failure(.timedOut) = await setEnabled(false, displayID: liveID) { timedOut = true }
             startPassRestoreIfNeeded()
-            // Settled by enumeration, not the transaction's result (see verifyBackOnline). 4s
-            // window matches softReconnect's, for the same display-link-handshake reason.
             stillOnline = !(await verifyOffline(displayID: liveID, timeout: 4.0))
-            if stillOnline {
-                // Confirmed with a second, longer look before letting the record go: #33 had
-                // WindowServer hold a commit for 29.5s after a reported failure.
-                stillOnline = !(await verifyOffline(displayID: liveID, timeout: 2.0))
-            }
+            if stillOnline { stillOnline = !(await verifyOffline(displayID: liveID, timeout: 2.0)) }
         }
         guard let idx = disconnected.firstIndex(where: { $0.uuid == recordUUID }) else { return }
         if stillOnline, !timedOut, onlineDisplayIDs().contains(liveID) {
-            // Still lit: forget the record, so the list never claims a display is disconnected
-            // while the user is looking at it. Exception: after a timeout (not evidence the
-            // change failed, see ToggleError.timedOut) the record stays for the next refresh to
-            // decide, since #33 shows a commit can still land 29.5s later.
             Self.log.notice("record dropped for \(recordUUID, privacy: .public) id \(liveID, privacy: .public): still lit")
             if refused { park(disconnected[idx]) }
             disconnected.remove(at: idx)
         } else {
-            // Off (regardless of what the transaction reported) is decided the same way:
-            // dropping the record here would strand the display with no way back through the UI.
             disconnected[idx].displayID = liveID
+            if let liveIdentity { disconnected[idx].hardwareIdentity = liveIdentity }
         }
         saveDesired()
     }
 
-    /// Guards against overlapping recovery runs from reconfiguration-callback bursts, same
-    /// as restoreInFlight below for restoreIfNoActiveDisplay.
     private var strandedRecoveryInFlight = false
-
-    /// Sleep guard parked by a softReconnect whose display never verifiably returned, keeping a
-    /// lid-closed portable awake so recovery can keep retrying. Released once every marked
-    /// display resolves, or adopted by the next blink.
+    private var strandedRecoveryPending = false
     private var lingeringSleepGuard: CGVirtualDisplay?
+    private static let settleRepolls = 10
+    private static let settleRepollInterval: UInt64 = 100_000_000
+    private static let wakeSettleRepolls = 40
+    private static let wakeSettleSpan = 15.0
+    private var lastWake: DispatchTime?
+    private var screensAsleep = false
+    private var restoreInFlight = false
+    private var parked: DisconnectedDisplay?
+    private let parkedKey = "crisp.PhysicalParkedDisconnect"
+    private var parkedReapplyInFlight = false
+    private var standDownUntilUndock = false
+}
 
-    /// Recovery for a softReconnect the app died mid-toggle on (crash, force-quit): the
-    /// dead-man markers name exactly the stranded displays. Cheap no-op unless a marker is
-    /// set; skips any display whose blink is live right now. See docs/display-notes.md
-    /// (softReconnect).
+// MARK: - Stranded recovery & blackout rescue
+
+extension PhysicalDisplayToggleService {
+    /// Recovery for a softReconnect the app died mid-toggle on (crash, force-quit).
     func recoverStrandedSoftReconnect() async {
-        // Also runs with only a parked guard left; the release at the bottom is its only way out.
-        guard isSupported, !strandedRecoveryInFlight,
-              !pendingSoftReconnectUUIDs().isEmpty || lingeringSleepGuard != nil
-        else { return }
+        guard isSupported else { return }
+        if strandedRecoveryInFlight {
+            strandedRecoveryPending = true
+            return
+        }
+        guard !pendingSoftReconnects().isEmpty || lingeringSleepGuard != nil else { return }
         strandedRecoveryInFlight = true
         defer { strandedRecoveryInFlight = false }
-        for markedUUID in pendingSoftReconnectUUIDs() {
-            // Re-checked per iteration: a blink can start for this display while we're awaiting.
-            guard !softReconnectInFlight.contains(markedUUID) else { continue }
-            guard let targetID = allDisplaysIncludingDisabled().first(where: { uuid(for: $0) == markedUUID }) else {
-                // Gone entirely: a physical replug brings it back on its own.
-                removePendingSoftReconnect(markedUUID)
-                continue
+        repeat {
+            strandedRecoveryPending = false
+            for marker in pendingSoftReconnects() {
+                guard !softReconnectInFlight.contains(marker.uuid) else { continue }
+                await recoverStrandedMarker(marker)
             }
-            if onlineDisplayIDs().contains(targetID) {
-                // Recovered normally (or a previous sweep already brought it back).
-                removePendingSoftReconnect(markedUUID)
-                continue
+            if lingeringSleepGuard != nil, pendingSoftReconnects().isEmpty {
+                lingeringSleepGuard = nil
             }
-            var recovered = false
-            for _ in 0..<3 {
-                // Never trust the API result alone (see verifyBackOnline): a lying "success" is
-                // exactly how a clamshell-sleep interruption erased a marker while still disabled.
-                if case .success = await setEnabled(true, displayID: targetID),
-                   await verifyBackOnline(uuid: markedUUID) {
-                    recovered = true
-                    break
-                }
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
-            if !recovered { await reenableUnintentionallyDisabled() }
-            // Cleared only if verifiably back; otherwise the marker stays for the next retry.
-            if recovered || onlineDisplayIDs().contains(targetID) {
-                removePendingSoftReconnect(markedUUID)
-            }
+        } while strandedRecoveryPending && (!pendingSoftReconnects().isEmpty || lingeringSleepGuard != nil)
+    }
+
+    private func recoverStrandedMarker(_ marker: PendingSoftReconnect) async {
+        let onlineIDs = onlineDisplayIDs()
+        guard let targetID = PhysicalDisplayReconnectPolicy.resolveStrandedSoftReconnectID(
+            markedUUID: marker.uuid, savedDisplayID: marker.displayID,
+            enumerated: enumeratedDisplays(), onlineIDs: onlineIDs
+        ) else {
+            removePendingSoftReconnect(marker.uuid)
+            return
         }
-        // Released once no marker remains: every marked display is back online or gone.
-        if lingeringSleepGuard != nil, pendingSoftReconnectUUIDs().isEmpty {
-            lingeringSleepGuard = nil
+        if onlineIDs.contains(targetID) {
+            removePendingSoftReconnect(marker.uuid)
+            return
+        }
+        var recovered = false
+        for _ in 0..<3 {
+            if case .success = await setEnabled(true, displayID: targetID),
+               await verifyBackOnline(uuid: marker.uuid) {
+                recovered = true
+                break
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        if !recovered { await reenableUnintentionallyDisabled() }
+        if recovered || onlineID(for: marker.uuid) != nil || onlineDisplayIDs().contains(targetID) {
+            removePendingSoftReconnect(marker.uuid)
         }
     }
 
-    /// Re-poll count/interval before committing to a restore: the count is per-process and can
-    /// trail reality by up to ~150ms (issue #117), so a single sample is unreliable.
-    /// See docs/display-notes.md (restoreIfNoActiveDisplay).
-    private static let settleRepolls = 10
-    private static let settleRepollInterval: UInt64 = 100_000_000
-
-    /// The bound near a wake, and how near counts. A monitor coming out of standby at a
-    /// wake can take seconds to enumerate: on #168 a DSC panel over USB-C came online
-    /// about 250 ms after the ten re-polls had given up. Forty re-polls give the rescue
-    /// about 6 s, the window softReconnect gives a link handshake (4 s and its 2 s last
-    /// look). Only near a wake, so an undock while awake keeps its ~4 s of dark; 15 s is
-    /// about as long as the wake chain's passes run.
-    private static let wakeSettleRepolls = 40
-    private static let wakeSettleSpan = 15.0
-
-    /// Stamped on every didWake and screensDidWake.
-    private var lastWake: DispatchTime?
-    /// Set by willSleep and screensDidSleep, cleared by the next wake. A DarkWake posts
-    /// neither wake notification, so the rescue stays down through it too.
-    private var screensAsleep = false
-
-    /// Read on every pass rather than once: the wake notification can land after the
-    /// first callback of that wake has already started the settle.
     private func repollLimit(askedAt asked: DispatchTime) -> Int {
         guard let lastWake, lastWake + Self.wakeSettleSpan > asked else { return Self.settleRepolls }
         return Self.wakeSettleRepolls
     }
 
-    /// Guards against overlapping restore attempts from reconfiguration-callback bursts.
-    private var restoreInFlight = false
-
-    /// The blackout rescue: a physical unplug bypasses disconnect()'s last-screen guard
-    /// entirely (built-in disabled via Crisp + cable pulled = zero active, and macOS won't
-    /// re-enable it), so this brings back a still-attached disconnected display, built-in
-    /// first. Grew a layer per desk shape (#91, #99, #106, #117, #112).
-    /// See docs/display-notes.md (restoreIfNoActiveDisplay).
+    /// Blackout rescue: re-enables a still-attached disconnected display (built-in first) when
+    /// zero active displays remain. See docs/display-notes.md (restoreIfNoActiveDisplay).
     func restoreIfNoActiveDisplay() {
         guard isSupported, !disconnected.isEmpty else { return }
         if VirtualDisplayService.shared.isSmartDummyMounted && !canRestoreOpenLidBuiltin {
             Self.log.notice("restore skipped: Smart Dummy is mounted")
             return
         }
-        // Every stand-down is logged: a dark-desk capture otherwise can't tell "never asked"
-        // from "asked and refused" (issue #92).
         let active = phantomAwareActiveDisplayCount()
         guard !restoreInFlight, active == 0 else {
             Self.log.notice("restore asked with \(self.disconnected.count, privacy: .public) record(s): \(active, privacy: .public) active display(s), in flight \(self.restoreInFlight, privacy: .public), standing down")
@@ -859,10 +869,6 @@ final class PhysicalDisplayToggleService: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let self else { return }
             defer { self.restoreInFlight = false }
-            // One sample isn't enough: the count can trail reality by up to ~150ms (issue #117).
-            // Re-polled (not watched) since the count during a display sleep isn't reliable
-            // either. See docs/display-notes.md (restoreIfNoActiveDisplay).
-            // Near a wake the bound is wakeSettleRepolls (#168).
             var settled = self.phantomAwareActiveDisplayCount()
             var repolls = 0
             while settled == 0, repolls < self.repollLimit(askedAt: asked) {
@@ -875,8 +881,6 @@ final class PhysicalDisplayToggleService: ObservableObject {
                 Self.log.notice("restore settled: \(settled, privacy: .public) active display(s) after 2 s and \(repolls, privacy: .public) re-poll(s), standing down")
                 return
             }
-            // A lid close takes the built-in away about 5 s before Clamshell Sleep: an enable
-            // then reports success and WindowServer keeps the display off until logout (#246).
             guard !self.screensAsleep else {
                 Self.log.notice("screens asleep, restore stands down: \(self.disconnected.count, privacy: .public) record(s) kept")
                 return
@@ -886,27 +890,18 @@ final class PhysicalDisplayToggleService: ObservableObject {
                 Self.log.notice("Smart Dummy mounted during settle window, restore stands down")
                 return
             }
-            // Logged because every screen is black here: distinguishes a Crisp restore from
-            // macOS re-probing on its own (#91).
             Self.log.notice("no active display, restoring from \(self.disconnected.count, privacy: .public) record(s) after 2 s and \(repolls, privacy: .public) re-poll(s)")
-            // Records that fail to re-resolve fall back to their last-known ID rather than
-            // being dropped: SLSConfigureDisplayEnabled still honors a stale ID for attached
-            // hardware in this state. Built-in tried first (flag from disconnect time; a live
-            // query is unreliable here).
             let smartDummyMounted = VirtualDisplayService.shared.isSmartDummyMounted
             let candidates = self.disconnected
                 .filter { !smartDummyMounted || $0.isBuiltin == true }
                 .map { record in (record, self.resolveCurrentID(for: record) ?? record.displayID) }
                 .sorted { self.wasBuiltin($0.0, id: $0.1) && !self.wasBuiltin($1.0, id: $1.1) }
             for (record, _) in candidates {
-                // macOS re-probes on its own and often wins the race; stop as soon as anything's back.
                 let allowDespiteDummy = record.isBuiltin == true && self.canRestoreOpenLidBuiltin
                 let canProceed = !VirtualDisplayService.shared.isSmartDummyMounted || allowDespiteDummy
                 guard !self.screensAsleep, canProceed, self.phantomAwareActiveDisplayCount() == 0 else { return }
                 guard case .success = await self.reconnect(uuid: record.uuid, byUser: false) else { continue }
                 self.park(record)
-                // Not proof of recovery (see verifyBackOnline): only enumeration ends the
-                // restore; otherwise move to the next record.
                 for _ in 0..<20 {
                     if self.phantomAwareActiveDisplayCount() > 0 { return }
                     try? await Task.sleep(nanoseconds: 100_000_000)
@@ -914,20 +909,6 @@ final class PhysicalDisplayToggleService: ObservableObject {
             }
         }
     }
-
-    // MARK: - Parked record and the Tools switch (#202)
-
-    /// A built-in Disconnect the rescue (or a refused re-apply) had to undo, kept so the next
-    /// dock with one of its externals switches the built-in off again. Reconnect on the
-    /// built-in ends it, because a fresh disconnect replaces it and a user reconnect never
-    /// parks. See docs/display-notes.md (parked record).
-    private var parked: DisconnectedDisplay?
-    private let parkedKey = "crisp.PhysicalParkedDisconnect"
-    private var parkedReapplyInFlight = false
-    /// Set by a Reconnect of the built-in while the Tools switch is on, so the switch leaves it
-    /// lit until the next undock. ponytail: memory only, so a relaunch while docked turns it
-    /// off again; persist it if that bites.
-    private var standDownUntilUndock = false
 }
 
 // MARK: - Soft reconnect
@@ -941,6 +922,10 @@ extension PhysicalDisplayToggleService {
     /// portables. See docs/display-notes.md (softReconnect).
     @discardableResult
     func softReconnect(_ display: DisplayInfo) async -> Bool {
+        await connectionQueue.run { await self.performSoftReconnect(display) }
+    }
+
+    private func performSoftReconnect(_ display: DisplayInfo) async -> Bool {
         guard isSupported else { return false }
         let blinkUUID = display.displayUUID
         // All blinks share the same temporary virtual display identity.
@@ -949,29 +934,19 @@ extension PhysicalDisplayToggleService {
         softReconnectInFlight.insert(blinkUUID)
         var recoveringLateDisable = false
         defer { if !recoveringLateDisable { softReconnectInFlight.remove(blinkUUID) } }
-        let startID = display.displayID
-        // Captured before the sleep guard exists: re-enumeration can land on macOS's default
-        // mode, and the guard's own arrival can itself knock the panel to a lower refresh rate.
+        let startID = onlineID(for: blinkUUID) ?? display.displayID
         let previousMode = CGDisplayCopyDisplayMode(startID)
-        // A lid-closed portable sleeps the instant its sole active display goes away, even
-        // under a PreventSystemSleep assertion; a live virtual display blocks it. Desktops and
-        // lid-open laptops never need the guard. See docs/display-notes.md (softReconnect).
+        let previousVRR = previousMode.flatMap { currentIsVariableRefresh(for: startID, modeID: $0.ioDisplayModeID) }
         var sleepGuard: CGVirtualDisplay?
         if needsBlinkSleepGuard(for: startID) {
-            // Reuse a guard parked by a previous unresolved blink; the fixed identity can't exist twice.
             sleepGuard = lingeringSleepGuard
             lingeringSleepGuard = nil
             if sleepGuard == nil { sleepGuard = await makeBlinkSleepGuard() }
             if sleepGuard == nil { return false }
         }
-        // Held (released) at every exit below; releasing it is what removes the display.
         defer { withExtendedLifetime(sleepGuard) {} }
-        // Logged so a capture can tell a blink's disable/enable pair from a user's own
-        // disconnect and reconnect, which look identical at the transaction level.
         Self.log.notice("soft reconnect blink: \(blinkUUID, privacy: .public) id \(startID, privacy: .public)")
-        // Persisted before disabling: if the app dies mid-toggle, recoverStrandedSoftReconnect
-        // finds this at the next launch and finishes the job.
-        addPendingSoftReconnect(blinkUUID)
+        addPendingSoftReconnect(blinkUUID, displayID: startID)
         let (lateDisable, continuation) = AsyncStream<Result<Void, ToggleError>>.makeStream()
         let disabled = await setEnabled(false, displayID: startID, onLateCompletion: {
             continuation.yield($0)
@@ -988,35 +963,28 @@ extension PhysicalDisplayToggleService {
             removePendingSoftReconnect(blinkUUID)
             return false
         }
-        // Wait for the framebuffer to actually drop before re-enabling (0.9s ceiling if the event never comes).
         await ReconfigEvents.shared.next(for: startID, matching: .removeFlag, timeout: 0.9)
         var backOnline = false
         for _ in 0..<3 {
-            let targetID = allDisplaysIncludingDisabled().first { uuid(for: $0) == blinkUUID } ?? startID
-            // Fired without awaiting: the result is untrustworthy either way (see
-            // verifyBackOnline), and the commit can block ~10s after the display is actually
-            // back. Enumeration is the only proof. See docs/display-notes.md (softReconnect).
+            let targetID = PhysicalDisplayReconnectPolicy.resolveStrandedSoftReconnectID(
+                markedUUID: blinkUUID, savedDisplayID: startID,
+                enumerated: enumeratedDisplays(), onlineIDs: onlineDisplayIDs()
+            ) ?? startID
             Task { _ = await setEnabled(true, displayID: targetID) }
-            // Must outlast a display link handshake (2-4s), or re-issuing enable mid-sync restarts it.
             if await verifyBackOnline(uuid: blinkUUID, timeout: 4.0) { backOnline = true; break }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
         if !backOnline {
-            // Don't leave a display our own disable may have stranded.
             await reenableUnintentionallyDisabled(includingBlink: blinkUUID)
-            // One more look before declaring failure: slow re-enumeration must still land in
-            // the success path below (mode restore, guard release timing).
             backOnline = await verifyBackOnline(uuid: blinkUUID, timeout: 2.0)
         }
         guard backOnline else {
-            // Marker stays so refresh/relaunch keeps retrying; the sleep guard is parked
-            // (not released) or a lid-closed portable would sleep with the display stranded.
             if sleepGuard != nil { lingeringSleepGuard = sleepGuard }
             return false
         }
         removePendingSoftReconnect(blinkUUID)
         if let previousMode, let backID = onlineID(for: blinkUUID) {
-            await restoreBlinkMode(previousMode, displayID: backID)
+            await restoreBlinkMode(previousMode, isVariableRefresh: previousVRR, displayID: backID)
         }
         return true
     }
@@ -1041,10 +1009,23 @@ extension PhysicalDisplayToggleService {
         }
     }
 
-    private func restoreBlinkMode(_ previous: CGDisplayMode, displayID: CGDirectDisplayID) async {
+    private func restoreBlinkMode(
+        _ previous: CGDisplayMode, isVariableRefresh: Bool?, displayID: CGDirectDisplayID
+    ) async {
         // Re-enumeration renumbers every mode ID, so re-find the previous mode by parameters.
-        let matches = Self.same(previous)
-        guard let target = DisplayMode.availableModes(for: displayID).first(where: matches) else { return }
+        let modes = DisplayMode.availableModes(for: displayID)
+        let matches: (DisplayMode) -> Bool
+        let target: DisplayMode
+        if let vrr = isVariableRefresh,
+           let exact = modes.first(where: Self.same(previous, isVariableRefresh: vrr)) {
+            matches = Self.same(previous, isVariableRefresh: vrr)
+            target = exact
+        } else if let fallback = modes.first(where: Self.same(previous)) {
+            matches = Self.same(previous)
+            target = fallback
+        } else {
+            return
+        }
         for _ in 0..<4 {
             if CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID == target.id { break }
             _ = await ResolutionService.shared.reapply(on: displayID, where: matches)
@@ -1239,15 +1220,20 @@ extension PhysicalDisplayToggleService {
 
     /// A timed-out reconnect: the record drops once the display is back online. The input is
     /// not written back after a late landing.
-    private func watchLateReconnect(_ uuid: String) {
+    private func watchLateReconnect(_ uuid: String, byUser: Bool) {
         awaitingLateCommit.insert(uuid)
         Task { [weak self] in
             guard let self else { return }
             let landed = await verifyBackOnline(uuid: uuid, timeout: Self.lateCommitWindow)
             if landed {
-                disconnected.removeAll { $0.uuid == uuid }
-                saveDesired()
-                VirtualDisplayService.shared.evaluateNow(reason: "PhysicalDisplayLateReconnected")
+                if let record = disconnected.first(where: { $0.uuid == uuid }) {
+                    if !byUser {
+                        park(record)
+                    } else if record.isBuiltin == true, SettingsService.shared.disconnectBuiltinWhenDocked {
+                        standDownUntilUndock = true
+                    }
+                }
+                completeReconnect(uuid)
             }
             awaitingLateCommit.remove(uuid)
             Self.log.notice("timed-out reconnect of \(uuid, privacy: .public): \(landed ? "landed late, record dropped" : "not landed after the late-commit window", privacy: .public)")
@@ -1338,23 +1324,29 @@ extension PhysicalDisplayToggleService {
         guard disconnected.contains(where: { $0.isBuiltin != true }) else { return disconnected }
         let attached = attachedExternalDisplays()
         let online = displayManager?.displays.filter { !$0.isBuiltin && $0.isOnline } ?? []
+        let onlineEntries: [(uuid: String, name: String, identity: DDCServiceMatcher.Identity)] = online.map {
+            ($0.displayUUID, $0.name, Self.hardwareIdentity(for: $0))
+        }
         return disconnected.filter { record in
-            if record.isBuiltin == true || (record.reconnectRequested == true && onlineID(for: record.uuid) != nil) {
-                return true
-            }
+            if record.isBuiltin == true { return true }
             let peers = disconnected.filter { $0.uuid != record.uuid && $0.isBuiltin != true }
-            let onlinePeers = online.filter { $0.displayUUID != record.uuid }
-            let identities = peers.compactMap(\.hardwareIdentity) + onlinePeers.map(Self.hardwareIdentity)
-            return attached.contains { name, identity in
+            let onlinePeers = onlineEntries.filter { $0.uuid != record.uuid }
+            let identities = peers.compactMap(\.hardwareIdentity) + onlinePeers.map(\.identity)
+            if attached.contains(where: { name, identity in
                 if let saved = record.hardwareIdentity, let identity {
                     return saved.matchesAttachment(identity, excluding: identities)
                 }
-                // macOS suffixes names of identical monitors. Older records have no EDID identity.
-                guard let name, record.name == name || record.name.hasPrefix(name + " (") else { return false }
+                guard let name, PhysicalDisplayReconnectPolicy.matchesProductName(record.name, productName: name) else { return false }
                 return !(peers.map(\.name) + onlinePeers.map(\.name)).contains {
-                    $0 == name || $0.hasPrefix(name + " (")
+                    PhysicalDisplayReconnectPolicy.matchesProductName($0, productName: name)
                 }
+            }) {
+                return true
             }
+            return PhysicalDisplayReconnectPolicy.hasUnclaimedIdenticalAttachment(
+                recordName: record.name, savedIdentity: record.hardwareIdentity,
+                attached: attached, onlinePeers: onlinePeers.map { ($0.name, $0.identity) }
+            )
         }
     }
 
