@@ -32,6 +32,7 @@ struct MainDisplayView: View {
                 .onHover { isHovered = $0 }
                 .contentShape(Rectangle())
                 .onTapGesture {
+                    guard PanelOpenGuard.allowsActivation else { return }
                     Task { @MainActor in
                         let success = await ArrangementService.shared.setAsMainDisplay(
                             display.displayID,

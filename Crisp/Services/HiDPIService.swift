@@ -126,7 +126,7 @@ final class HiDPIService: @unchecked Sendable {
         } catch {
             return "Failed to generate override: \(error.localizedDescription)"
         }
-        if let err = executePrivilegedCommand(HiDPIOverrideCommand.appleScriptLiteral(command)) {
+        if let err = executePrivilegedCommand(command) {
             return err
         }
 
@@ -139,7 +139,8 @@ final class HiDPIService: @unchecked Sendable {
         let plistPath = overridePlistURL(vendor: vendor, product: product).path
         guard FileManager.default.fileExists(atPath: plistPath) else { return nil }
 
-        if let err = executePrivilegedCommand("rm -f '\(plistPath)'") {
+        let escapedPath = plistPath.replacingOccurrences(of: "'", with: "'\\''")
+        if let err = executePrivilegedCommand("/bin/rm -f '\(escapedPath)'") {
             return err
         }
         return nil
@@ -148,10 +149,12 @@ final class HiDPIService: @unchecked Sendable {
     // MARK: - Helpers
 
     /// Executes a shell command with administrator privileges via AppleScript.
+    /// Escapes the shell command internally for the AppleScript string literal.
     /// Returns nil on success, or an error message on failure.
     func executePrivilegedCommand(_ command: String) -> String? {
+        let escaped = HiDPIOverrideCommand.appleScriptLiteral(command)
         let script = """
-            do shell script "\(command)" with administrator privileges
+            do shell script "\(escaped)" with administrator privileges
             """
         var error: NSDictionary?
         guard let appleScript = NSAppleScript(source: script) else {

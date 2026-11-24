@@ -130,11 +130,32 @@ private enum DebugInfo {
     }
 }
 
+private struct HandCursorModifier: ViewModifier {
+    @State private var cursorPushed = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                if hovering, !cursorPushed {
+                    NSCursor.pointingHand.push()
+                    cursorPushed = true
+                } else if !hovering, cursorPushed {
+                    NSCursor.pop()
+                    cursorPushed = false
+                }
+            }
+            .onDisappear {
+                if cursorPushed {
+                    NSCursor.pop()
+                    cursorPushed = false
+                }
+            }
+    }
+}
+
 private extension View {
     /// The pointing hand over a link, as the panel's link rows show it.
     func handCursor() -> some View {
-        onHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        modifier(HandCursorModifier())
     }
 }

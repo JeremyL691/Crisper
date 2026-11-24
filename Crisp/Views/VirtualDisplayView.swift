@@ -255,6 +255,9 @@ struct AdvancedVirtualDisplaysTab: View {
         .scrollDisabled(true)
         .frame(maxWidth: .infinity)
         .onDisappear { commitName() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            commitName()
+        }
         .onChange(of: service.smartConfig.name) { _, updated in
             if name != updated { name = updated }
         }

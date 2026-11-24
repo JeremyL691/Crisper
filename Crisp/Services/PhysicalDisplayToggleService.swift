@@ -942,7 +942,7 @@ final class PhysicalDisplayToggleService: ObservableObject {
     /// See docs/display-notes.md (restoreIfNoActiveDisplay).
     func restoreIfNoActiveDisplay() {
         guard isSupported, !disconnected.isEmpty else { return }
-        if VirtualDisplayService.shared.isSmartDummyMounted {
+        if VirtualDisplayService.shared.isSmartDummyMounted && !canRestoreOpenLidBuiltin {
             Self.log.notice("restore skipped: Smart Dummy is mounted")
             return
         }
@@ -981,7 +981,8 @@ final class PhysicalDisplayToggleService: ObservableObject {
                 Self.log.notice("screens asleep, restore stands down: \(self.disconnected.count, privacy: .public) record(s) kept")
                 return
             }
-            guard !VirtualDisplayService.shared.isSmartDummyMounted else {
+            let restoreBuiltin = self.canRestoreOpenLidBuiltin
+            guard !VirtualDisplayService.shared.isSmartDummyMounted || restoreBuiltin else {
                 Self.log.notice("Smart Dummy mounted during settle window, restore stands down")
                 return
             }
@@ -992,14 +993,16 @@ final class PhysicalDisplayToggleService: ObservableObject {
             // being dropped: SLSConfigureDisplayEnabled still honors a stale ID for attached
             // hardware in this state. Built-in tried first (flag from disconnect time; a live
             // query is unreliable here).
+            let smartDummyMounted = VirtualDisplayService.shared.isSmartDummyMounted
             let candidates = self.disconnected
+                .filter { !smartDummyMounted || $0.isBuiltin == true }
                 .map { record in (record, self.resolveCurrentID(for: record) ?? record.displayID) }
                 .sorted { self.wasBuiltin($0.0, id: $0.1) && !self.wasBuiltin($1.0, id: $1.1) }
             for (record, _) in candidates {
                 // macOS re-probes on its own and often wins the race; stop as soon as anything's back.
-                guard !self.screensAsleep,
-                      !VirtualDisplayService.shared.isSmartDummyMounted,
-                      self.phantomAwareActiveDisplayCount() == 0 else { return }
+                let allowDespiteDummy = record.isBuiltin == true && self.canRestoreOpenLidBuiltin
+                let canProceed = !VirtualDisplayService.shared.isSmartDummyMounted || allowDespiteDummy
+                guard !self.screensAsleep, canProceed, self.phantomAwareActiveDisplayCount() == 0 else { return }
                 guard case .success = await self.reconnect(uuid: record.uuid, byUser: false) else { continue }
                 self.park(record)
                 // Not proof of recovery (see verifyBackOnline): only enumeration ends the
@@ -1205,6 +1208,50 @@ extension PhysicalDisplayToggleService {
 }
 
 extension PhysicalDisplayToggleService {
+    /// True when the built-in display was disconnected while docked, the lid is open, and an
+    /// undock caused Smart Dummy to mount before blackout rescue could restore the built-in panel.
+    var canRestoreOpenLidBuiltin: Bool {
+        SettingsService.shared.disconnectBuiltinWhenDocked
+            && !PowerAndTopologyMonitor.readIsClamshellClosed()
+            && disconnected.contains { $0.isBuiltin == true }
+    }
+
+    /// Synchronous quit-time safety rail called before `VirtualDisplayService.shared.shutdown()`:
+    /// if disconnecting the last physical display relied on Smart Dummy and zero online physical
+    /// displays remain, synchronously re-enable a disconnected physical display (built-in first)
+    /// so tearing down Smart Dummy never leaves the machine black across exit or reboot.
+    func restoreAtLeastOnePhysicalDisplaySync() {
+        guard isSupported, !disconnected.isEmpty, onlinePhysicalDisplayCount() == 0 else { return }
+
+        let candidates = disconnected
+            .map { record in (record, resolveCurrentID(for: record) ?? record.displayID) }
+            .sorted { wasBuiltin($0.0, id: $0.1) && !wasBuiltin($1.0, id: $1.1) }
+
+        for (record, resolvedID) in candidates {
+            let candidateIDs = resolvedID == record.displayID ? [resolvedID] : [resolvedID, record.displayID]
+            for targetID in candidateIDs {
+                var config: CGDisplayConfigRef?
+                guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else { continue }
+                let setErr = SLSConfigureDisplayEnabled(cfg, targetID, true)
+                guard setErr == .success else {
+                    CGCancelDisplayConfiguration(cfg)
+                    continue
+                }
+                let completeErr = CGCompleteDisplayConfiguration(cfg, .permanently)
+                guard completeErr == .success else {
+                    CGCancelDisplayConfiguration(cfg)
+                    continue
+                }
+                Self.log.notice("quit rescue: synchronously restored display \(record.uuid, privacy: .public) id \(targetID, privacy: .public)")
+                park(record)
+                disconnected.removeAll { $0.uuid == record.uuid }
+                saveDesired()
+                return
+            }
+        }
+        Self.log.error("quit rescue: failed to synchronously restore any disconnected physical display")
+    }
+
     /// The disconnected displays that are still plugged in, which the panel offers to
     /// reconnect. An unplugged one keeps its record, so a re-plug turns it off again (#101),
     /// but gets no row: Reconnect cannot bring it back.

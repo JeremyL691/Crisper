@@ -97,14 +97,19 @@ final class PowerAndTopologyMonitor {
     private var powerSourceRunLoopSource: CFRunLoopSource?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var fallbackTimer: Timer?
+    private var fallbackPollingEnabled = true
 
     private(set) var areScreensAsleep = false
     private var lastKnownClamshellClosed: Bool?
     private var lastKnownOnACPower: Bool?
 
-    func start(handlers: Handlers) {
+    func start(handlers: Handlers, enableFallbackPolling: Bool = true) {
         self.handlers = handlers
-        guard !isStarted else { return }
+        self.fallbackPollingEnabled = enableFallbackPolling
+        guard !isStarted else {
+            updateFallbackTimer()
+            return
+        }
         isStarted = true
         areScreensAsleep = false
         lastKnownClamshellClosed = Self.readIsClamshellClosed()
@@ -175,6 +180,7 @@ final class PowerAndTopologyMonitor {
             let obs = wsCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.areScreensAsleep = true
+                    self?.updateFallbackTimer()
                 }
             }
             workspaceObservers.append(obs)
@@ -184,23 +190,41 @@ final class PowerAndTopologyMonitor {
             let obs = wsCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.areScreensAsleep = false
+                    self?.updateFallbackTimer()
                     self?.handlers.onEvent(reason, false, 50)
                 }
             }
             workspaceObservers.append(obs)
         }
 
-        // 5. Low-frequency 30s fallback check (no 2s polling)
-        let timer = Timer(timeInterval: Self.fallbackIntervalSeconds, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handlers.onEvent("PeriodicFallback", true, nil)
-            }
-        }
-        timer.tolerance = 3.0
-        RunLoop.main.add(timer, forMode: .common)
-        fallbackTimer = timer
+        // 5. Low-frequency 30s fallback check (paused automatically while disabled or asleep)
+        updateFallbackTimer()
 
         Self.log.notice("PowerAndTopologyMonitor started (fbNotifiers=\(self.fbNotifiers.count, privacy: .public))")
+    }
+
+    func setFallbackPollingEnabled(_ enabled: Bool) {
+        guard fallbackPollingEnabled != enabled else { return }
+        fallbackPollingEnabled = enabled
+        updateFallbackTimer()
+    }
+
+    private func updateFallbackTimer() {
+        let shouldRun = isStarted && fallbackPollingEnabled && !areScreensAsleep
+        if shouldRun {
+            guard fallbackTimer == nil else { return }
+            let timer = Timer(timeInterval: Self.fallbackIntervalSeconds, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handlers.onEvent("PeriodicFallback", true, nil)
+                }
+            }
+            timer.tolerance = 3.0
+            RunLoop.main.add(timer, forMode: .common)
+            fallbackTimer = timer
+        } else {
+            fallbackTimer?.invalidate()
+            fallbackTimer = nil
+        }
     }
 
     func stop() {
@@ -246,6 +270,7 @@ final class PowerAndTopologyMonitor {
 
     func noteSystemWake() {
         areScreensAsleep = false
+        updateFallbackTimer()
     }
 
     // MARK: - Live Sampling
@@ -409,6 +434,7 @@ final class PowerAndTopologyMonitor {
         if lastKnownOnACPower != currentOnAC {
             lastKnownOnACPower = currentOnAC
             areScreensAsleep = false
+            updateFallbackTimer()
         }
         handlers.onEvent("PowerSourceChange", true, 50)
     }
@@ -419,6 +445,7 @@ final class PowerAndTopologyMonitor {
         if lastKnownClamshellClosed != currentClosed {
             lastKnownClamshellClosed = currentClosed
             areScreensAsleep = false
+            updateFallbackTimer()
         }
         handlers.onFastHardwareEvent()
         handlers.onEvent("ClamshellStateChange", true, 150)

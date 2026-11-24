@@ -27,6 +27,11 @@ final class EDROverlayManager {
     }
 
     private var overlays: [CGDirectDisplayID: Overlay] = [:]
+    private var idleCloseTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
+    private var isSystemAsleep = false
+    private var areScreensAsleep = false
+    private var sleepObservers: [NSObjectProtocol] = []
+    private var isPausedForSleep: Bool { isSystemAsleep || areScreensAsleep }
     private let device = MTLCreateSystemDefaultDevice()
     private lazy var commandQueue = device?.makeCommandQueue()
 
@@ -37,14 +42,67 @@ final class EDROverlayManager {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        registerSleepObservers()
     }
 
-    /// Applies a multiplier to a display. Once a window exists it stays alive
-    /// even at factor 1.0: closing and reopening the EDR surface can visibly
-    /// flash the display, so crossing the 100% boundary must not churn
-    /// windows (see docs/brightness-notes.md). Explicit teardown goes through
-    /// removeOverlay. Returns false when an overlay was needed but could not
-    /// be created, so callers can revert the toggle.
+    private func registerSleepObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let onSleep: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = true } else { self.isSystemAsleep = true }
+                self.pauseAllForSleep()
+            }
+        }
+        let onWake: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = false } else { self.isSystemAsleep = false }
+                guard !self.isPausedForSleep else { return }
+                self.resumeAllFromSleep()
+            }
+        }
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(true)
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                onWake(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { _ in
+                onWake(true)
+            }
+        ]
+    }
+
+    private func pauseAllForSleep() {
+        for displayID in Array(overlays.keys) {
+            overlays[displayID]?.timer?.invalidate()
+            overlays[displayID]?.timer = nil
+            idleCloseTasks[displayID]?.cancel()
+            idleCloseTasks.removeValue(forKey: displayID)
+        }
+    }
+
+    private func resumeAllFromSleep() {
+        for displayID in Array(overlays.keys) {
+            guard let overlay = overlays[displayID] else { continue }
+            if overlay.factor <= 1.001 {
+                removeOverlay(for: displayID)
+            } else {
+                startTimerIfNeeded(for: displayID)
+                render(for: displayID)
+            }
+        }
+    }
+
+    /// Applies a multiplier to a display. Closes and tears down the Metal
+    /// overlay 2s after `factor` settles at `<= 1.001` so idle displays submit
+    /// zero Metal drawables, while avoiding churn across rapid boundary drags.
+    /// Returns false when an overlay was needed but could not be created.
     @discardableResult
     func setFactor(_ factor: Double, for displayID: CGDirectDisplayID) -> Bool {
         let clamped = max(1.0, factor)
@@ -54,6 +112,15 @@ final class EDROverlayManager {
             guard makeOverlay(for: displayID) else { return false }
         }
         guard var overlay = overlays[displayID] else { return false }
+
+        if clamped > 1.001 {
+            idleCloseTasks[displayID]?.cancel()
+            idleCloseTasks.removeValue(forKey: displayID)
+            if !isPausedForSleep { startTimerIfNeeded(for: displayID) }
+        } else {
+            scheduleIdleCloseIfNeeded(for: displayID)
+        }
+
         // Skip sub-0.5% changes to avoid pointless re-renders during fades.
         guard abs(overlay.factor - clamped) > 0.005 else { return true }
         overlay.factor = clamped
@@ -62,7 +129,31 @@ final class EDROverlayManager {
         return true
     }
 
+    private func scheduleIdleCloseIfNeeded(for displayID: CGDirectDisplayID) {
+        guard idleCloseTasks[displayID] == nil else { return }
+        idleCloseTasks[displayID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.idleCloseTasks.removeValue(forKey: displayID)
+            guard let overlay = self.overlays[displayID], overlay.factor <= 1.001 else { return }
+            self.removeOverlay(for: displayID)
+        }
+    }
+
+    private func startTimerIfNeeded(for displayID: CGDirectDisplayID) {
+        guard !isPausedForSleep, overlays[displayID]?.timer == nil else { return }
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            // Added to RunLoop.main below, so it fires on the main run loop.
+            MainActor.assumeIsolated { self?.render(for: displayID) }
+        }
+        timer.tolerance = 0.05
+        RunLoop.main.add(timer, forMode: .common)
+        overlays[displayID]?.timer = timer
+    }
+
     func removeOverlay(for displayID: CGDirectDisplayID) {
+        idleCloseTasks[displayID]?.cancel()
+        idleCloseTasks.removeValue(forKey: displayID)
         overlays[displayID]?.timer?.invalidate()
         overlays[displayID]?.window.close()
         overlays.removeValue(forKey: displayID)
@@ -74,6 +165,7 @@ final class EDROverlayManager {
 
     /// Re-render every overlay (Metal drawables can be lost across sleep).
     func rerenderAll() {
+        guard !isPausedForSleep else { return }
         for displayID in Array(overlays.keys) { render(for: displayID) }
     }
 
@@ -123,13 +215,8 @@ final class EDROverlayManager {
 
         overlays[displayID] = Overlay(window: window, layer: metalLayer, factor: 1.0, timer: nil, revealed: false)
 
-        // Re-presents forever at 5fps for as long as the overlay exists (see class doc).
-        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
-            // Added to RunLoop.main below, so it fires on the main run loop.
-            MainActor.assumeIsolated { self?.render(for: displayID) }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        overlays[displayID]?.timer = timer
+        // Re-presents at 5fps while active & awake (paused on sleep, closed 2s after settling at 1.0).
+        startTimerIfNeeded(for: displayID)
 
         // Anti-flash fallback: reveal after a beat regardless, in case the
         // first frame's completion handler is slow to fire.
@@ -140,7 +227,7 @@ final class EDROverlayManager {
     }
 
     private func render(for displayID: CGDirectDisplayID) {
-        guard var overlay = overlays[displayID] else { return }
+        guard !isPausedForSleep, var overlay = overlays[displayID] else { return }
         // Frame self-heal: a reconfiguration mid-transition can leave the
         // overlay parked over a neighboring display (see docs/brightness-notes.md).
         // Re-align on every render tick instead of trusting one notification.
@@ -210,6 +297,8 @@ final class EDROverlayManager {
         var toRemove: [CGDirectDisplayID] = []
         for (displayID, overlay) in overlays {
             guard let screen = NSScreen.screen(for: displayID) else {
+                idleCloseTasks[displayID]?.cancel()
+                idleCloseTasks.removeValue(forKey: displayID)
                 overlay.timer?.invalidate()
                 overlay.window.close()
                 toRemove.append(displayID)

@@ -28,6 +28,8 @@ private func clamshellSystemPowerCallback(
 /// assertions, and the IORegisterForSystemPower sleep-veto/wake client.
 @MainActor
 final class ClamshellGuardService {
+    static let shared = ClamshellGuardService()
+
     private static let log = Logger(subsystem: "com.crisper.app", category: "clamshell-guard")
     private static let tickleIntervalSeconds: TimeInterval = 60.0
 
@@ -171,6 +173,18 @@ final class ClamshellGuardService {
         if rc == kIOReturnSuccess {
             lastTickleTime = now
         }
+    }
+
+    /// Resets kernel global IOPMrootDomain Selector 12 (`setDisableClamShellSleep(false)`) at
+    /// startup when the guard is not actively needed, recovering cleanly from a prior crash/SIGKILL.
+    func resetStaleDisableIfNeeded() {
+        guard !clamshellSleepDisabled else { return }
+        setRootDomainClamshellSleepDisabled(false)
+        if rootDomainConn != IO_OBJECT_NULL {
+            IOServiceClose(rootDomainConn)
+            rootDomainConn = IO_OBJECT_NULL
+        }
+        Self.log.notice("Reset stale IOPMrootDomain clamshell-sleep disable state at startup")
     }
 
     /// Releases all power assertions and restores normal clamshell sleep synchronously.

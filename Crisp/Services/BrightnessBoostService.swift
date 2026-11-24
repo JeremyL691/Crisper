@@ -64,14 +64,18 @@ final class BrightnessBoostService {
     /// Displays whose overlay factor is currently above identity; used to
     /// detect the first entry into the boost region (arms fastPollUntil).
     private var activeBoostDisplays: Set<CGDirectDisplayID> = []
+    private var isSystemAsleep = false
+    private var areScreensAsleep = false
+    private var sleepObservers: [NSObjectProtocol] = []
+    private var isPausedForSleep: Bool { isSystemAsleep || areScreensAsleep }
 
     private func startHeadroomPollIfNeeded() {
-        guard headroomPollTask == nil else { return }
+        guard !isPausedForSleep, headroomPollTask == nil else { return }
         headroomPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let fast = self.flatMap { s in s.fastPollUntil.map { Date() < $0 } } ?? false
                 try? await Task.sleep(nanoseconds: fast ? 16_000_000 : 500_000_000)
-                guard let self else { return }
+                guard let self, !Task.isCancelled, !self.isPausedForSleep else { return }
                 var anyBoosted = false
                 // Also visits inert-but-enabled displays (flag set, capability
                 // currently missing) so the debounced auto-disable below can
@@ -107,6 +111,46 @@ final class BrightnessBoostService {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        registerSleepObservers()
+    }
+
+    private func registerSleepObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let onSleep: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = true } else { self.isSystemAsleep = true }
+                self.headroomPollTask?.cancel()
+                self.headroomPollTask = nil
+            }
+        }
+        let onWake: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = false } else { self.isSystemAsleep = false }
+                guard !self.isPausedForSleep else { return }
+                let hasBoosted = DisplayManagerAccessor.shared.displays.contains {
+                    $0.maxBrightness > 100 || self.isEnabled(for: $0)
+                }
+                if hasBoosted {
+                    self.startHeadroomPollIfNeeded()
+                }
+            }
+        }
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(true)
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                onWake(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { _ in
+                onWake(true)
+            }
+        ]
     }
 
     // MARK: - Persistence (displayUUID keyed, survives displayID reassignment)
@@ -301,7 +345,7 @@ final class BrightnessBoostService {
     /// brightness, clamped against live headroom (see
     /// BrightnessBoostMath.overlayFactor and docs/brightness-notes.md for the
     /// ramp-in and auto-disable behavior this feeds).
-    func syncOverlay(for display: DisplayInfo) {
+    func syncOverlay(for display: DisplayInfo, forceTableWrite: Bool = false) {
         guard display.maxBrightness > 100 else { return }
         // The disable-collapse animation drives the overlay factor itself;
         // running concurrently (e.g. from the headroom poll) would fight it.
@@ -325,12 +369,13 @@ final class BrightnessBoostService {
             }
         } else {
             // Externals boost via the display transfer table, not an EDR
-            // overlay (see BrightnessBoostMath.externalBoostCeiling). Written
-            // unconditionally so the poll re-heals the table after an
-            // ICC-restore clobber.
+            // overlay (see BrightnessBoostMath.externalBoostCeiling). Steady-state
+            // polls skip unchanged table writes; wake/reconfig passes forceTableWrite.
             let factor = BrightnessBoostMath.externalBoostFactor(
                 brightness: display.brightness, sliderMax: display.maxBrightness)
-            BrightnessService.shared.setBoostFactor(factor, for: display.displayID)
+            BrightnessService.shared.setBoostFactor(
+                factor, for: display.displayID, force: forceTableWrite
+            )
         }
         if display.maxBrightness > 100 { startHeadroomPollIfNeeded() }
     }
@@ -352,7 +397,7 @@ final class BrightnessBoostService {
             // are unreliable single samples.
             guard newMax > 100 else { continue }
             display.maxBrightness = newMax
-            syncOverlay(for: display)
+            syncOverlay(for: display, forceTableWrite: true)
         }
         // Watch every enabled display, including inert ones, so the debounced
         // auto-disable can resolve them into a coherent off state.
@@ -364,6 +409,13 @@ final class BrightnessBoostService {
     /// left as the user set it: it is now an explicit per-display toggle (see
     /// HDRToggleView), and boost no longer silently reverts it on exit.
     func prepareForTermination() {
+        headroomPollTask?.cancel()
+        headroomPollTask = nil
+        reapplyAfterReconfigTask?.cancel()
+        reapplyAfterReconfigTask = nil
+        let center = NSWorkspace.shared.notificationCenter
+        for obs in sleepObservers { center.removeObserver(obs) }
+        sleepObservers.removeAll()
         EDROverlayManager.shared.removeAll()
     }
 

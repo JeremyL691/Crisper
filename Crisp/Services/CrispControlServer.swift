@@ -41,17 +41,23 @@ final class CrispControlServer {
         let listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard listener >= 0 else { throw Self.failure("socket") }
         do {
+            let flags = fcntl(listener, F_GETFD)
+            guard flags >= 0, fcntl(listener, F_SETFD, flags | FD_CLOEXEC) == 0 else {
+                throw Self.failure("fcntl")
+            }
             var address = sockaddr_un()
             address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
             address.sun_family = sa_family_t(AF_UNIX)
             withUnsafeMutableBytes(of: &address.sun_path) { bytes in
                 path.withCString { bytes.baseAddress?.copyMemory(from: $0, byteCount: path.utf8.count + 1) }
             }
+            let previousMask = Darwin.umask(0o077)
             let bound = withUnsafePointer(to: &address) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 }
             }
+            _ = Darwin.umask(previousMask)
             guard bound == 0 else { throw Self.failure("bind") }
             guard Darwin.chmod(path, S_IRUSR | S_IWUSR) == 0 else { throw Self.failure("chmod") }
             guard Darwin.listen(listener, 8) == 0 else { throw Self.failure("listen") }
@@ -489,6 +495,8 @@ final class CrispControlServer {
     }
 
     private nonisolated static func configure(_ client: Int32) -> Bool {
+        let flags = fcntl(client, F_GETFD)
+        guard flags >= 0, fcntl(client, F_SETFD, flags | FD_CLOEXEC) == 0 else { return false }
         var timeout = timeval(tv_sec: 2, tv_usec: 0)
         let size = socklen_t(MemoryLayout<timeval>.size)
         var enabled: Int32 = 1

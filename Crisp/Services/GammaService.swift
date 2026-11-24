@@ -21,17 +21,9 @@ final class GammaService: @unchecked Sendable {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { _ in
-            var displayCount: UInt32 = 0
-            CGGetOnlineDisplayList(32, nil, &displayCount)
-            var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-            CGGetOnlineDisplayList(displayCount, &displays, &displayCount)
-            for displayID in displays {
-                let size = 256
-                var r = (0..<size).map { CGGammaValue($0) / CGGammaValue(size - 1) }
-                var g = r; var b = r
-                CGSetDisplayTransferByTable(displayID, UInt32(size), &r, &g, &b)
-            }
+        ) { [weak self] _ in
+            self?.adjustmentsLock.withLock { self?.activeAdjustments.removeAll() }
+            CGDisplayRestoreColorSyncSettings()
         }
         observeProfileChanges()
     }

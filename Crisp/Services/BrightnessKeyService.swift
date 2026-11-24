@@ -117,6 +117,7 @@ final class BrightnessKeyService: @unchecked Sendable {
             if let source = runLoopSource {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             }
+            CFMachPortInvalidate(tap)
         }
         eventTap = nil
         runLoopSource = nil
@@ -132,19 +133,65 @@ final class BrightnessKeyService: @unchecked Sendable {
 
     private var pollTimer: Timer?
     private var activationObserver: NSObjectProtocol?
+    private var sleepWakeObservers: [NSObjectProtocol] = []
+    private var isSystemAsleep = false
+    private var wantsRetryPoll = false
+
+    private func installSleepWakeObserversIfNeeded() {
+        guard sleepWakeObservers.isEmpty else { return }
+        let wsCenter = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+            let obs = wsCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleSleep() }
+            }
+            sleepWakeObservers.append(obs)
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            let obs = wsCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleWake() }
+            }
+            sleepWakeObservers.append(obs)
+        }
+    }
+
+    private func handleSleep() {
+        isSystemAsleep = true
+        pollTimer?.invalidate()
+        pollTimer = nil
+        stopTrustWatchdog()
+    }
+
+    private func handleWake() {
+        guard isSystemAsleep else { return }
+        isSystemAsleep = false
+        if eventTap != nil {
+            startTrustWatchdog()
+        } else if wantsRetryPoll {
+            startRetryPollTimerIfNeeded()
+        }
+    }
+
+    private func startRetryPollTimerIfNeeded() {
+        guard pollTimer == nil, !isSystemAsleep else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            // The timer stays out of the main-actor block below. Handing it in reads as
+            // a race even though both halves run on the main run loop.
+            guard let self else { timer.invalidate(); return }
+            // Scheduled from the main actor, so it fires on the main run loop.
+            MainActor.assumeIsolated { self.armIfSettled() }
+        }
+        timer.tolerance = 0.5
+        pollTimer = timer
+    }
 
     private func retryUntilArmed() {
+        installSleepWakeObserversIfNeeded()
+        wantsRetryPoll = true
         // ponytail: unbounded 2s poll; tapCreate is cheap and it stops the instant the grant
         // lands. The activation observer just makes it feel instant when the user clicks back in.
         if pollTimer == nil {
             Self.log.notice("key tap refused (Accessibility not granted for this build?), retrying every 2 s")
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
-                // The timer stays out of the main-actor block below. Handing it in reads as
-                // a race even though both halves run on the main run loop.
-                guard let self else { timer.invalidate(); return }
-                // Scheduled from the main actor, so it fires on the main run loop.
-                MainActor.assumeIsolated { self.armIfSettled() }
-            }
+            startRetryPollTimerIfNeeded()
         }
         if activationObserver == nil {
             activationObserver = NotificationCenter.default.addObserver(
@@ -166,6 +213,7 @@ final class BrightnessKeyService: @unchecked Sendable {
     }
 
     private func stopRetrying() {
+        wantsRetryPoll = false
         pollTimer?.invalidate()
         pollTimer = nil
         if let obs = activationObserver {
@@ -182,10 +230,11 @@ final class BrightnessKeyService: @unchecked Sendable {
     private var trustWatchdog: Timer?
 
     private func startTrustWatchdog() {
-        guard trustWatchdog == nil else { return }
+        installSleepWakeObserversIfNeeded()
+        guard trustWatchdog == nil, !isSystemAsleep else { return }
         // ponytail: 0.5s poll, well inside the ~1s WindowServer tap-timeout; AXIsProcessTrusted()
         // is a cheap TCC lookup so 2x/sec while armed is negligible.
-        trustWatchdog = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             // As with the poll timer, the timer stays out of the main-actor block.
             guard let self else { timer.invalidate(); return }
             // Scheduled from the main actor, so it fires on the main run loop.
@@ -197,6 +246,8 @@ final class BrightnessKeyService: @unchecked Sendable {
                 self.retryUntilArmed()
             }
         }
+        timer.tolerance = 0.15
+        trustWatchdog = timer
     }
 
     private func stopTrustWatchdog() {

@@ -62,6 +62,7 @@ final class VolumeService: ObservableObject {
             disabled.insert(uuid)
             forcedCapable.remove(uuid)
             pending.removeValue(forKey: display.displayID)
+            lastWrittenDDC.removeValue(forKey: display.displayID)
         }
         UserDefaults.standard.set(Array(forcedCapable), forKey: forcedKey)
         UserDefaults.standard.set(Array(disabled), forKey: disabledKey)
@@ -75,6 +76,8 @@ final class VolumeService: ObservableObject {
     func invalidate(for displayID: CGDirectDisplayID) {
         ddcMax.removeValue(forKey: displayID)
         preMuteVolume.removeValue(forKey: displayID)
+        pending.removeValue(forKey: displayID)
+        lastWrittenDDC.removeValue(forKey: displayID)
     }
 
     // MARK: - Probe
@@ -113,6 +116,7 @@ final class VolumeService: ObservableObject {
                 // stale cached read never fights an in-flight drag.
                 if self.pending[id] == nil, !self.pumpActive.contains(id) {
                     display.volume = Double(result.current) / Double(volumeMax) * 100.0
+                    self.lastWrittenDDC[id] = result.current
                 }
             }
         }
@@ -123,6 +127,8 @@ final class VolumeService: ObservableObject {
     /// Latest pending percent per display; only one DDC write in flight each.
     private var pending: [CGDirectDisplayID: Double] = [:]
     private var pumpActive: Set<CGDirectDisplayID> = []
+    /// Last acknowledged raw VCP volume per display, to skip duplicate I2C writes.
+    private var lastWrittenDDC: [CGDirectDisplayID: UInt16] = [:]
 
     /// Sets speaker volume (0–100). Coalesced like the brightness writer:
     /// latest value wins, writes paced to the MCCS ~50ms spacing so slider
@@ -147,10 +153,17 @@ final class VolumeService: ObservableObject {
 
     private func pump(for id: CGDirectDisplayID) {
         guard !pumpActive.contains(id), let percent = pending.removeValue(forKey: id) else { return }
-        pumpActive.insert(id)
         let raw = UInt16((percent / 100.0 * Double(ddcMax[id] ?? 100)).rounded())
-        DDCService.shared.writeAsync(displayID: id, command: DDCService.volumeVCP, value: raw) { _ in
+        if lastWrittenDDC[id] == raw {
+            pump(for: id)
+            return
+        }
+        pumpActive.insert(id)
+        DDCService.shared.writeAsync(displayID: id, command: DDCService.volumeVCP, value: raw) { success in
             Task { @MainActor in
+                if success {
+                    self.lastWrittenDDC[id] = raw
+                }
                 try? await Task.sleep(nanoseconds: 50_000_000)  // MCCS write spacing
                 self.pumpActive.remove(id)
                 self.pump(for: id)
@@ -201,6 +214,7 @@ final class VolumeService: ObservableObject {
     /// Drops the cached ties; DisplayManager calls it on every display change.
     func forgetAudioOutputTies() {
         audioOutputTies.removeAll()
+        lastWrittenDDC.removeAll()
     }
 
     private func cachedDisplayUUID(owningAudioDeviceUID uid: String, among candidates: [DisplayInfo]) -> String? {

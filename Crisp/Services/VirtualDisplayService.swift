@@ -135,7 +135,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
 
     // MARK: - Internal Engine Components
 
-    private let clamshellGuard = ClamshellGuardService()
+    private let clamshellGuard = ClamshellGuardService.shared
     private let monitor = PowerAndTopologyMonitor()
     private let vdisplayQueue = DispatchQueue(label: "com.crisper.app.vdisplay")
 
@@ -242,7 +242,7 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
                 return self.destroyingDisplayIDs.contains(displayID)
                     || self.activeDisplayObjects.values.contains { $0.displayID == displayID }
             }
-        ))
+        ), enableFallbackPolling: smartConfig.isEnabled)
 
         evaluateNow(reason: "Startup")
     }
@@ -478,12 +478,19 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
         )
     }
 
+    private func clearErrorIfNeeded() {
+        if lastError != nil {
+            lastError = nil
+        }
+    }
+
     private func evaluateLocked(reason: String) async {
+        monitor.setFallbackPollingEnabled(smartConfig.isEnabled)
         let input = sampleCurrentInput()
-        liveInput = input
+        if liveInput != input { liveInput = input }
         let decision = SmartVirtualDisplayPolicy.evaluate(config: smartConfig, input: input)
         let previousPhase = phase
-        phase = decision.phase
+        if phase != decision.phase { phase = decision.phase }
 
         if previousPhase != decision.phase {
             Self.log.notice(
@@ -496,50 +503,58 @@ final class VirtualDisplayService: ObservableObject, @unchecked Sendable {
             // Destroy virtual display BEFORE releasing assertions on disable.
             destroyActiveVirtualDisplay(reason: "Disabled (\(reason))")
             clamshellGuard.releaseAll()
-            lastError = nil
+            clearErrorIfNeeded()
 
         case .suspendedOnBattery:
             // Release guard BEFORE/WITH destroy on AC->Battery suspend so Mac sleeps cleanly.
             clamshellGuard.releaseAll()
             destroyActiveVirtualDisplay(reason: "SuspendedOnBattery (\(reason))")
-            lastError = nil
+            clearErrorIfNeeded()
 
         case .armedStandby:
             if lastPhysicalDisconnectHoldCount > 0 && isSmartDummyMounted {
-                phase = .activeMounted
+                if phase != .activeMounted { phase = .activeMounted }
                 return
             }
             // Destroy virtual display FIRST so yield teardown has zero extra latency.
             destroyActiveVirtualDisplay(reason: "AutoYield (\(reason))")
             clamshellGuard.apply(decision: decision, forceTickle: false)
-            lastError = nil
+            clearErrorIfNeeded()
 
         case .activeMounted:
-            // Engage clamshell guard before mounting so unplugging the last display never races sleep.
-            clamshellGuard.apply(
-                decision: decision,
-                forceTickle: previousPhase != .activeMounted
-            )
+            await applyActiveMountedLocked(reason: reason, decision: decision, previousPhase: previousPhase)
+        }
+    }
 
-            // Detect stale virtual display missing from WindowServer after 5s grace period.
-            if let existing = activeDisplayObjects[smartConfig.id],
-               CGDisplayIsOnline(existing.displayID) == 0,
-               (CFAbsoluteTimeGetCurrent() - mountedAt) > 5.0 {
-                Self.log.notice("[\(reason, privacy: .public)] virtual display \(existing.displayID, privacy: .public) missing after grace period; remounting")
-                destroyActiveVirtualDisplay(reason: "StaleRemount")
-            }
+    private func applyActiveMountedLocked(
+        reason: String,
+        decision: SmartVirtualDisplayDecision,
+        previousPhase: SmartVirtualDisplayPhase
+    ) async {
+        // Engage clamshell guard before mounting so unplugging the last display never races sleep.
+        clamshellGuard.apply(
+            decision: decision,
+            forceTickle: previousPhase != .activeMounted
+        )
 
-            if let existing = activeDisplayObjects[smartConfig.id] {
-                ensureNotMirrored(existing.displayID)
-                await ensureConfiguredMode(existing.displayID, config: smartConfig)
-            } else {
-                switch await mountSmartDummy(config: smartConfig, allowYieldDuringApply: true) {
-                case .mounted, .yielded:
-                    lastError = nil
-                case .failed:
-                    lastError = "Failed to mount Smart Dummy virtual display."
-                    Self.log.error("[\(reason, privacy: .public)] failed to mount Smart Dummy")
-                }
+        // Detect stale virtual display missing from WindowServer after 5s grace period.
+        if let existing = activeDisplayObjects[smartConfig.id],
+           CGDisplayIsOnline(existing.displayID) == 0,
+           (CFAbsoluteTimeGetCurrent() - mountedAt) > 5.0 {
+            Self.log.notice("[\(reason, privacy: .public)] virtual display \(existing.displayID, privacy: .public) missing after grace period; remounting")
+            destroyActiveVirtualDisplay(reason: "StaleRemount")
+        }
+
+        if let existing = activeDisplayObjects[smartConfig.id] {
+            ensureNotMirrored(existing.displayID)
+            await ensureConfiguredMode(existing.displayID, config: smartConfig)
+        } else {
+            switch await mountSmartDummy(config: smartConfig, allowYieldDuringApply: true) {
+            case .mounted, .yielded:
+                clearErrorIfNeeded()
+            case .failed:
+                lastError = "Failed to mount Smart Dummy virtual display."
+                Self.log.error("[\(reason, privacy: .public)] failed to mount Smart Dummy")
             }
         }
     }

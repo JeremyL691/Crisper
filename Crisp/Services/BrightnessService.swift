@@ -215,6 +215,10 @@ final class BrightnessService: @unchecked Sendable {
 
     /// Stores the current software brightness factor per display (0.01–1.0).
     private var softwareBrightnessFactors: [CGDirectDisplayID: Double] = [:]
+    /// Last software brightness factor written to UserDefaults (<= 1.0 only).
+    private var lastPersistedSoftwareFactor: [CGDirectDisplayID: Double] = [:]
+    /// Last gamma factor written to CGSetDisplayTransferByTable, to skip unchanged writes.
+    private var lastWrittenGammaFactor: [CGDirectDisplayID: Double] = [:]
     private let softwareBrightnessLock = NSLock()
 
     /// UUID-keyed like GammaPersistenceKey (issue #32): a raw-ID key could
@@ -564,6 +568,8 @@ final class BrightnessService: @unchecked Sendable {
     private var ddcOperationGeneration = DDCOperationGeneration()
     /// Timestamp of the last DDC brightness write per display, used to pace writes.
     private var lastDDCWriteInstant: [CGDirectDisplayID: DispatchTime] = [:]
+    /// Last acknowledged raw VCP brightness value per display, to deduplicate identical I2C writes.
+    private var lastWrittenDDC: [CGDirectDisplayID: UInt16] = [:]
     private let ddcPumpLock = NSLock()
 
     /// Minimum spacing between DDC brightness writes to one display, per the
@@ -580,7 +586,11 @@ final class BrightnessService: @unchecked Sendable {
     /// BrightnessBoostService. Guarded by ddcAvailableLock.
     private var hdrDimmedDisplays: Set<CGDirectDisplayID> = []
 
-    private func applyLatestSoftwareBrightness(_ percent: Double, for displayID: CGDirectDisplayID) {
+    private func applyLatestSoftwareBrightness(
+        _ percent: Double,
+        for displayID: CGDirectDisplayID,
+        forceTableWrite: Bool = false
+    ) {
         let token = ddcPumpLock.withLock {
             ddcOperationGeneration.nextRequest(for: displayID)
         }
@@ -590,7 +600,7 @@ final class BrightnessService: @unchecked Sendable {
                 self.ddcOperationGeneration.isLatestRequest(token, for: displayID)
             }
             guard isLatest else { return }
-            self.setSoftwareBrightness(percent, for: displayID)
+            self.setSoftwareBrightness(percent, for: displayID, forceTableWrite: forceTableWrite)
         }
     }
 
@@ -599,6 +609,9 @@ final class BrightnessService: @unchecked Sendable {
             on ? hdrDimmedDisplays.insert(displayID).inserted : hdrDimmedDisplays.remove(displayID) != nil
         }
         if changed {
+            if !on {
+                ddcPumpLock.withLock { _ = lastWrittenDDC.removeValue(forKey: displayID) }
+            }
             Self.brightnessRouteChanged()
             Self.log.notice("display \(displayID, privacy: .public): HDR mode \(on ? "on, brightness routed to software gamma" : "off, brightness back on DDC", privacy: .public)")
         }
@@ -693,7 +706,6 @@ final class BrightnessService: @unchecked Sendable {
             ddcPumpLock.unlock()
             return
         }
-        lastDDCWriteInstant[displayID] = .now()
         let percent = target.percent
 
         // Denormalize percentage to display's native DDC range.
@@ -703,6 +715,32 @@ final class BrightnessService: @unchecked Sendable {
         }
         let ddcValue = UInt16((percent / 100.0) * Double(knownMax))
 
+        // Deduplicate identical integer VCP writes to prevent monitor EEPROM wear & I2C wedges,
+        // while still settling sub-threshold software dimming when no newer target is queued.
+        if lastWrittenDDC[displayID] == ddcValue {
+            let hasMore = pendingDDCTarget[displayID] != nil
+            if !hasMore { ddcPumpActive.remove(displayID) }
+            ddcPumpLock.unlock()
+            if hasMore {
+                pumpDDCWrite(for: displayID, topology: target.token)
+            } else {
+                queue.async {
+                    let settle: Bool = self.ddcPumpLock.withLock {
+                        self.ddcOperationGeneration.isLatestRequest(target.token, for: displayID)
+                            && self.pendingDDCTarget[displayID] == nil
+                    }
+                    if settle {
+                        let softwarePercent = target.percent < self.gammaBlendThreshold
+                            ? target.percent / self.gammaBlendThreshold * 100.0
+                            : 100.0
+                        self.setSoftwareBrightness(softwarePercent, for: displayID)
+                    }
+                }
+            }
+            return
+        }
+
+        lastDDCWriteInstant[displayID] = .now()
         DDCService.shared.writeAsync(
             displayID: displayID,
             command: DDCService.brightnessVCP,
@@ -710,7 +748,7 @@ final class BrightnessService: @unchecked Sendable {
         ) { [weak self] success in
             guard let self else { return }
             if success {
-                self.ddcWriteSucceeded(target, for: displayID)
+                self.ddcWriteSucceeded(target, ddcValue: ddcValue, for: displayID)
             } else {
                 self.ddcWriteFailed(target, for: displayID)
             }
@@ -723,7 +761,11 @@ final class BrightnessService: @unchecked Sendable {
     /// The write landed: settle the software preview this target left behind
     /// (a stale gamma dim would stack on the hardware value) and hand the
     /// pump the next target.
-    private func ddcWriteSucceeded(_ target: PendingDDCTarget, for displayID: CGDirectDisplayID) {
+    private func ddcWriteSucceeded(
+        _ target: PendingDDCTarget,
+        ddcValue: UInt16,
+        for displayID: CGDirectDisplayID
+    ) {
         let settled: (firstSuccess: Bool, hasNewerTarget: Bool)? = ddcPumpLock.withLock {
             guard ddcOperationGeneration.isCurrentTopology(target.token, for: displayID) else {
                 return nil
@@ -735,6 +777,7 @@ final class BrightnessService: @unchecked Sendable {
                 return was != true
             }
             ddcFailStreak[displayID] = 0
+            lastWrittenDDC[displayID] = ddcValue
             return (firstSuccess, pendingDDCTarget[displayID] != nil)
         }
         guard let settled else { return }
@@ -855,6 +898,15 @@ final class BrightnessService: @unchecked Sendable {
                     }
                     BrightnessBoostService.shared.syncOverlay(for: display)
                 }
+            } else if isAutoAdjust {
+                // Skip multi-step DDC glide during ambient auto-adjust: a single
+                // coalesced write avoids spamming I2C and wearing monitor EEPROM.
+                anim.cancel()
+                display.brightness = clamped
+                if clamped <= 100 {
+                    writeDDCBrightnessCoalesced(percent: clamped, for: displayID)
+                }
+                BrightnessBoostService.shared.syncOverlay(for: display)
             } else {
                 // DDC path, routed through the coalescing writer so steps that
                 // outpace the I2C bus are dropped instead of queued.
@@ -910,6 +962,7 @@ final class BrightnessService: @unchecked Sendable {
                 ddcPumpActive.remove(displayID)
                 ddcFailStreak.removeValue(forKey: displayID)
                 lastDDCWriteInstant.removeValue(forKey: displayID)
+                lastWrittenDDC.removeValue(forKey: displayID)
             }
             ddcAvailableLock.withLock {
                 for displayID in displayIDs {
@@ -936,6 +989,8 @@ final class BrightnessService: @unchecked Sendable {
         animators.removeValue(forKey: displayID)
         softwareBrightnessLock.withLock {
             _ = softwareBrightnessFactors.removeValue(forKey: displayID)
+            _ = lastPersistedSoftwareFactor.removeValue(forKey: displayID)
+            _ = lastWrittenGammaFactor.removeValue(forKey: displayID)
         }
     }
 
@@ -954,11 +1009,13 @@ final class BrightnessService: @unchecked Sendable {
         if inMemory == nil {
             softwareBrightnessLock.withLock { softwareBrightnessFactors[displayID] = f }
         }
-        setSoftwareBrightness(f * 100.0, for: displayID)
+        setSoftwareBrightness(f * 100.0, for: displayID, forceTableWrite: true)
     }
+}
 
-    // MARK: - Internal Display (IODisplayGetFloatParameter)
+// MARK: - Internal Display (IODisplayGetFloatParameter)
 
+extension BrightnessService {
     private static nonisolated(unsafe) let ioDisplayBrightnessKey = "brightness" as CFString
 
     /// The built-in's io_service_t via CGDisplayIOServicePort. Caller does NOT
@@ -1202,26 +1259,53 @@ extension BrightnessService {
     func setBrightnessControl(_ route: BrightnessControlRoute, for display: DisplayInfo) {
         if route == .hardware {
             let id = display.displayID
-            ddcPumpLock.withLock { ddcFailStreak[id] = 0 }
+            ddcPumpLock.withLock {
+                ddcFailStreak[id] = 0
+                _ = lastWrittenDDC.removeValue(forKey: id)
+            }
             ddcAvailableLock.withLock {
                 if ddcAvailable[id] == false { ddcAvailable.removeValue(forKey: id) }
             }
         }
         setSoftwareBrightnessForced(route == .software, for: display)
     }
+}
 
-    // MARK: - Software Brightness (Gamma Table Fallback)
+// MARK: - Software Brightness (Gamma Table Fallback)
 
+extension BrightnessService {
     /// Applies brightness via gamma table for displays where DDC is unavailable:
     /// a linear ramp from 0 to `factor` (5% floor, never fully black), scaled
     /// past 1.0 above 100% for the external boost region. See
     /// docs/brightness-notes.md (gamma and software brightness). Delegates to
     /// GammaService when it has an active adjustment, so the two don't
     /// overwrite each other's transfer table.
-    func setSoftwareBrightness(_ brightness: Double, for displayID: CGDirectDisplayID) {
+    func setSoftwareBrightness(
+        _ brightness: Double,
+        for displayID: CGDirectDisplayID,
+        forceTableWrite: Bool = false
+    ) {
         let factor = max(0.05, brightness / 100.0)
-        softwareBrightnessLock.withLock { softwareBrightnessFactors[displayID] = factor }
-        saveSoftwareBrightness(factor: factor, for: displayID)
+        let (shouldPersist, shouldWriteTable): (Bool, Bool) = softwareBrightnessLock.withLock {
+            softwareBrightnessFactors[displayID] = factor
+            let persist: Bool
+            if factor <= 1.0 {
+                let prevPersisted = lastPersistedSoftwareFactor[displayID]
+                persist = prevPersisted.map { abs($0 - factor) >= 0.01 } ?? true
+                if persist { lastPersistedSoftwareFactor[displayID] = factor }
+            } else {
+                persist = false
+            }
+            let prevGamma = lastWrittenGammaFactor[displayID]
+            let writeTable = forceTableWrite || (prevGamma.map { abs($0 - factor) >= 0.0005 } ?? true)
+            if writeTable { lastWrittenGammaFactor[displayID] = factor }
+            return (persist, writeTable)
+        }
+        if shouldPersist {
+            saveSoftwareBrightness(factor: factor, for: displayID)
+        }
+
+        guard shouldWriteTable else { return }
 
         if GammaService.shared.hasActiveAdjustment(for: displayID) {
             GammaService.shared.reapply(for: displayID)
@@ -1248,11 +1332,18 @@ extension BrightnessService {
     /// External boost region: BrightnessBoostService drives the transfer table
     /// above 1.0 through here, on the same serial queue as the dim path, so
     /// slider motion above and below 100 is always one writer, one table.
-    func setBoostFactor(_ factor: Double, for displayID: CGDirectDisplayID) {
-        applyLatestSoftwareBrightness(factor * 100.0, for: displayID)
+    func setBoostFactor(
+        _ factor: Double,
+        for displayID: CGDirectDisplayID,
+        force: Bool = false
+    ) {
+        applyLatestSoftwareBrightness(factor * 100.0, for: displayID, forceTableWrite: force)
     }
 
     func resetSoftwareBrightness(for displayID: CGDirectDisplayID) {
+        softwareBrightnessLock.withLock {
+            _ = lastWrittenGammaFactor.removeValue(forKey: displayID)
+        }
         let size = 256
         let values = (0..<size).map { CGGammaValue($0) / CGGammaValue(size - 1) }
         var red = values

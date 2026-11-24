@@ -30,7 +30,7 @@ struct DisconnectDisplayRow: View {
                 .onHover { isHovered = $0 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    guard !busy else { return }
+                    guard PanelOpenGuard.allowsActivation, !busy else { return }
                     busy = true
                     errorMessage = nil
                     Task { @MainActor in
@@ -155,7 +155,7 @@ private struct DisconnectedDisplayRow: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture {
-            guard !busy else { return }
+            guard PanelOpenGuard.allowsActivation, !busy else { return }
             onReconnect()
         }
         .accessibilityElement(children: .combine)

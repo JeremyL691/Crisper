@@ -13,26 +13,30 @@ enum CrispctlInstaller {
     /// runs translocated from a DMG or Downloads, where the bundle path is a
     /// temporary mount and a link to it would dangle on the next launch.
     static var isAvailable: Bool {
-        FileManager.default.isExecutableFile(atPath: bundledPath)
-            && !bundledPath.contains("/AppTranslocation/")
+        validatedBundledPath() != nil
     }
 
     /// The link must point at this bundle: a moved app offers the install again.
     static var isInstalled: Bool {
-        (try? FileManager.default.destinationOfSymbolicLink(atPath: linkPath)) == bundledPath
+        guard let resolved = validatedBundledPath() else { return false }
+        let target = try? FileManager.default.destinationOfSymbolicLink(atPath: linkPath)
+        return target == resolved || target == bundledPath
     }
 
     static func install() {
+        guard let safeTarget = validatedBundledPath() else {
+            log.error("crisperctl install refused: bundled binary path failed safety checks")
+            return
+        }
         // Try unprivileged first (VS Code's shell command install does the same): works
         // where /usr/local/bin belongs to the user, e.g. Intel Macs with Homebrew.
         let fm = FileManager.default
         if (try? fm.destinationOfSymbolicLink(atPath: linkPath)) != nil { try? fm.removeItem(atPath: linkPath) }
-        if (try? fm.createSymbolicLink(atPath: linkPath, withDestinationPath: bundledPath)) != nil { return }
-        // Single-quoted for the shell, then escaped for the AppleScript literal.
-        let shellPath = bundledPath.replacingOccurrences(of: "'", with: "'\\''")
-        let command = "mkdir -p /usr/local/bin && ln -sfn '\(shellPath)' \(linkPath)"
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        if (try? fm.createSymbolicLink(atPath: linkPath, withDestinationPath: safeTarget)) != nil { return }
+
+        // HiDPIService.executePrivilegedCommand escapes for AppleScript internally; only single-quote for sh.
+        let shellPath = safeTarget.replacingOccurrences(of: "'", with: "'\\''")
+        let command = "/bin/mkdir -p /usr/local/bin && /bin/ln -sfn '\(shellPath)' '\(linkPath)'"
         if let error = HiDPIService.shared.executePrivilegedCommand(command) {
             log.error("crisperctl install failed: \(error, privacy: .public)")
         }
@@ -42,8 +46,38 @@ enum CrispctlInstaller {
     static func uninstall() {
         guard (try? FileManager.default.destinationOfSymbolicLink(atPath: linkPath)) != nil else { return }
         if (try? FileManager.default.removeItem(atPath: linkPath)) != nil { return }
-        if let error = HiDPIService.shared.executePrivilegedCommand("rm -f \(linkPath)") {
+        if let error = HiDPIService.shared.executePrivilegedCommand("/bin/rm -f '\(linkPath)'") {
             log.error("crisperctl uninstall failed: \(error, privacy: .public)")
         }
+    }
+
+    /// Ensures the bundled CLI binary is a non-translocated regular executable inside a safe,
+    /// non-world-writable bundle owned by root or the current user before elevating privileges.
+    private static func validatedBundledPath() -> String? {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: bundledPath),
+              !bundledPath.contains("/AppTranslocation/") else { return nil }
+
+        let resolvedURL = URL(fileURLWithPath: bundledPath).resolvingSymlinksInPath()
+        let resolvedPath = resolvedURL.path
+        guard !resolvedPath.isEmpty,
+              !resolvedPath.contains("\0"),
+              !resolvedPath.contains("\n"),
+              !resolvedPath.contains("\r"),
+              resolvedPath.hasSuffix("/Contents/MacOS/crisperctl") else { return nil }
+
+        guard let attrs = try? fm.attributesOfItem(atPath: resolvedPath),
+              (attrs[.type] as? FileAttributeType) == .typeRegular,
+              let perms = (attrs[.posixPermissions] as? NSNumber)?.uint16Value,
+              (perms & 0o022) == 0,
+              let ownerID = (attrs[.ownerAccountID] as? NSNumber)?.uint32Value,
+              ownerID == 0 || ownerID == getuid() else { return nil }
+
+        let bundleDir = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        guard let dirAttrs = try? fm.attributesOfItem(atPath: bundleDir),
+              let dirPerms = (dirAttrs[.posixPermissions] as? NSNumber)?.uint16Value,
+              (dirPerms & 0o002) == 0 else { return nil }
+
+        return resolvedPath
     }
 }

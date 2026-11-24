@@ -13,6 +13,10 @@ struct InputHeadBlock: View {
     @ObservedObject var state: PanelSectionState
     @ObservedObject private var service = InputSwitchService.shared
 
+    private var isCardExpanded: Bool {
+        state.expandedDisplayIDs.contains(display.displayID)
+    }
+
     var body: some View {
         Group {
             if service.isAvailable(for: display) {
@@ -25,9 +29,20 @@ struct InputHeadBlock: View {
                 )
             }
         }
-        .task { await service.refreshInput(display) }
+        .task {
+            if isCardExpanded {
+                await service.refreshInput(display)
+            }
+        }
+        .onChange(of: isCardExpanded) { _, expanded in
+            if expanded {
+                Task { await service.refreshInput(display) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .crispPanelDidOpen)) { _ in
-            Task { await service.refreshInput(display) }
+            if isCardExpanded {
+                Task { await service.refreshInput(display) }
+            }
         }
     }
 }

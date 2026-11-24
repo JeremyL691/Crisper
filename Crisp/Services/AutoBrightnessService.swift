@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import IOKit
 import CoreGraphics
@@ -88,6 +89,10 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
 
     private var pollingTask: Task<Void, Never>?
     private let pollingInterval: TimeInterval = 2.0
+    private var isSystemAsleep = false
+    private var areScreensAsleep = false
+    private var sleepObservers: [NSObjectProtocol] = []
+    private var isPausedForSleep: Bool { isSystemAsleep || areScreensAsleep }
     /// Observes live built-in brightness pushes so externals sync the instant the
     /// built-in moves; the 2s poll stays on as a fallback heartbeat.
     private var builtinChangeObserver: NSObjectProtocol?
@@ -153,13 +158,9 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
 
     private func startPolling() {
         stopPolling()
-        pollingTask = Task.detached { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                let brightness = self.readBuiltinBrightness()
-                await self.applyBrightness(builtin: brightness)
-                try? await Task.sleep(nanoseconds: UInt64(self.pollingInterval * 1_000_000_000))
-            }
+        registerSleepObservers()
+        if !isPausedForSleep {
+            startPollingTask()
         }
         // Sync externals the moment the built-in changes, so they don't trail the 2s poll.
         builtinChangeObserver = NotificationCenter.default.addObserver(
@@ -167,7 +168,7 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
         ) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
-                guard self.isEnabled else { return }
+                guard self.isEnabled, !self.isPausedForSleep else { return }
                 await self.applyBrightness(builtin: self.readBuiltinBrightness())
             }
         }
@@ -202,9 +203,59 @@ final class AutoBrightnessService: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func startPollingTask() {
+        pollingTask?.cancel()
+        pollingTask = Task.detached { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let brightness = self.readBuiltinBrightness()
+                await self.applyBrightness(builtin: brightness)
+                try? await Task.sleep(nanoseconds: UInt64(self.pollingInterval * 1_000_000_000))
+            }
+        }
+    }
+
+    private func registerSleepObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let onSleep: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = true } else { self.isSystemAsleep = true }
+                self.pollingTask?.cancel()
+                self.pollingTask = nil
+            }
+        }
+        let onWake: @Sendable (Bool) -> Void = { [weak self] isScreen in
+            Task { @MainActor in
+                guard let self else { return }
+                if isScreen { self.areScreensAsleep = false } else { self.isSystemAsleep = false }
+                if self.isEnabled, !self.isPausedForSleep, self.pollingTask == nil {
+                    self.startPollingTask()
+                }
+            }
+        }
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { _ in
+                onSleep(true)
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                onWake(false)
+            },
+            center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { _ in
+                onWake(true)
+            }
+        ]
+    }
+
     private func stopPolling() {
         pollingTask?.cancel()
         pollingTask = nil
+        let center = NSWorkspace.shared.notificationCenter
+        for obs in sleepObservers { center.removeObserver(obs) }
+        sleepObservers.removeAll()
         if let obs = builtinChangeObserver {
             NotificationCenter.default.removeObserver(obs)
             builtinChangeObserver = nil

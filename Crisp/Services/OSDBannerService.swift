@@ -424,6 +424,7 @@ final class OSDBannerService {
         guard builtReduced != Self.reduceTransparency else { return }
         builtReduced = Self.reduceTransparency
         for (id, panel) in panels {
+            OSDGlass.stopRamps(in: panel.contentView?.layer)
             panel.close()
             panels[id] = nil
         }
@@ -432,6 +433,7 @@ final class OSDBannerService {
     private func prunePanels() {
         let live = Set(NSScreen.screens.compactMap(Self.displayID(of:)))
         for (id, panel) in panels where !live.contains(id) {
+            OSDGlass.stopRamps(in: panel.contentView?.layer)
             panel.close()
             panels[id] = nil
         }
@@ -645,11 +647,28 @@ struct OSDGlass {
     /// filter (it drew the settled glass from the first frame), so the inputs
     /// are stepped here and the filter set again on each step.
     func ramp(_ layer: CALayer, _ legs: [OSDGlassRamp.Leg]) {
-        Self.ramps[ObjectIdentifier(layer)]?.stop()
-        let ramp = OSDGlassRamp(layer: layer, legs: legs,
-                                from: layer.value(forKey: Self.targetsKey) as? [String: Double] ?? [:])
-        Self.ramps[ObjectIdentifier(layer)] = ramp
+        let key = ObjectIdentifier(layer)
+        Self.ramps[key]?.stop()
+        let ramp = OSDGlassRamp(
+            layer: layer,
+            legs: legs,
+            from: layer.value(forKey: Self.targetsKey) as? [String: Double] ?? [:]
+        ) { stopped in
+            if Self.ramps[key] === stopped {
+                Self.ramps.removeValue(forKey: key)
+            }
+        }
+        Self.ramps[key] = ramp
         ramp.start()
+    }
+
+    /// Stops and removes any active glass ramps belonging to layers inside `rootLayer`.
+    static func stopRamps(in rootLayer: CALayer?) {
+        guard let rootLayer else { return }
+        let matching = ramps.values.filter { $0.belongs(to: rootLayer) }
+        for ramp in matching {
+            ramp.stop()
+        }
     }
 
     private static var ramps: [ObjectIdentifier: OSDGlassRamp] = [:]
@@ -923,9 +942,27 @@ final class OSDGlassRamp: NSObject {
     private let from: [String: Double]
     private let begin = CACurrentMediaTime()
     private var timer: Timer?
+    private var onStop: ((OSDGlassRamp) -> Void)?
 
-    init(layer: CALayer, legs: [Leg], from: [String: Double]) {
-        (self.layer, self.legs, self.from) = (layer, legs, from)
+    init(
+        layer: CALayer,
+        legs: [Leg],
+        from: [String: Double],
+        onStop: ((OSDGlassRamp) -> Void)? = nil
+    ) {
+        self.layer = layer
+        self.legs = legs
+        self.from = from
+        self.onStop = onStop
+    }
+
+    func belongs(to ancestor: CALayer) -> Bool {
+        var current: CALayer? = layer
+        while let candidate = current {
+            if candidate === ancestor { return true }
+            current = candidate.superlayer
+        }
+        return false
     }
 
     func start() {
@@ -939,6 +976,9 @@ final class OSDGlassRamp: NSObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        let callback = onStop
+        onStop = nil
+        callback?(self)
     }
 
     @objc private func step() {
